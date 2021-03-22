@@ -30,7 +30,7 @@
 using namespace std;
 
 #define CLK chrono::high_resolution_clock
-#define DURµs chrono::duration_cast<chrono::microseconds>
+#define DURÂµs chrono::duration_cast<chrono::microseconds>
 static CLK::time_point start = CLK::now();
 
 size_t XXhashBytes = sizeof(uint64_t);
@@ -55,7 +55,7 @@ void usage();
 const size_t BufferSize = 144*7*4;
 
 DWORD WINAPI processFiles(LPVOID p);
-LPSTR* outT; vector<size_t> outTIdx;
+LPSTR* outT;
 short processFile(size_t idx);
 short process1File(LPCSTR fn);
 std::atomic<bool> stopProcessing(false);
@@ -423,7 +423,7 @@ int main(int argc, char** argv) {
   }
   else { if(showStats) flushErr("\n");
     process1File(path); 
-    long long dur = DURµs( CLK::now() - start).count();
+    long long dur = DURÂµs( CLK::now() - start).count();
     if(showStats){ flushErr("\nHashed %zu bytes",totalSzHashed);
       if(totalSzHashed>0) flushErr(" (%s) in total, average data rate: %s/s\n", 
         humanSize(totalSzHashed), humanSize(1000000*totalSzHashed/dur));
@@ -451,7 +451,7 @@ int main(int argc, char** argv) {
   filesByBlock = filesByBlock && hashedCnt>1;
   if(showDur || showStats || filesByBlock || listEmptyDirs) flushErr("\n");
   LPCSTR fBlock = filesByBlock ? "\n":"";
-  for(auto i: outTIdx){ flushOut("%s%s\n",outT[i],fBlock); delete[] outT[i]; }
+  for(size_t i=0;i<fileCnt;i++) if(nullptr!=outT[i]) { flushOut("%s%s\n",outT[i],fBlock); delete[] outT[i]; }
   fileIndxes = vector<size_t>(); slots = vector<bool>(); delete[] outT;
   
   if(listEmptyDirs){ if(!filesByBlock) flushErr("\n");
@@ -463,7 +463,7 @@ int main(int argc, char** argv) {
   else if(listEmptyDirs) flushErr("\n");
   
   //_sleep(72000);
-  long long dur = DURµs(CLK::now() - start).count();
+  long long dur = DURÂµs(CLK::now() - start).count();
 
   if(showStats){ 
     flushErr("Hashed %zu bytes (%s", totalSzHashed, humanSize(totalSzHashed));
@@ -516,7 +516,7 @@ dirCounts* travel(LPSTR const & path, size_t parentIdx, size_t& LargestFileSz) {
   vector<shared_ptr<CHAR>> dirs;
   do { 
     if(!lstrcmpW(wfd.cFileName, L".") || !lstrcmpW(wfd.cFileName, L"..") || 
-       wcsstr(wfd.cFileName, L"\\$RECYCLE.BIN") ||
+       wcsstr(wfd.cFileName, L"$RECYCLE.BIN") ||
        wcsstr(wfd.cFileName, L"System Volume Information")) continue;
     
     unique_ptr<CHAR> q( fn = wide2uf8(wfd.cFileName));
@@ -630,7 +630,7 @@ short processFile(size_t fidx) {
   free(fname);
 
   outT[fidx] = buffer;
-  Lock(); outTIdx.push_back(fidx); hashedCnt++; totalSzHashed += c*sz; unLock();
+  Lock(); hashedCnt++; totalSzHashed += c*sz; unLock();
 
   return 0;
 }
@@ -751,7 +751,7 @@ inline void prHashLine(const string& algo, const short fszW, const size_t fSz, c
     }
     return;
   } 
-
+  
   if(pretty&&noFname) flushOut("%s\n",                   lowerCase? hash:toupper(p.first));
   else if(pretty)     flushOut("%-*.*s%s\n", hashW,hashW,lowerCase? hash:toupper(p.first), noFname? "":fn);
   else                flushOut("%s%s\n",                 lowerCase? hash:toupper(p.first), noFname? "":fn);
