@@ -1,7 +1,17 @@
 # folderHash
-Compute hashes for all files in a folder tree.
+Compute hashes for all files in a folder tree (Windows 7+).
 
-This is a versatile multithreaded command-line interface to Portable Hash Library by Stephan Brumme (all rights reserved).
+This is a Windows versatile multithreaded command-line interface to Portable Hash Library by Stephan Brumme (all rights reserved).
+
+Supported algorithms : XX, CRC32, MD5, SHA1/2/3, Keccak
+
+Example usage:  folderHash -u -crc -g -ss 0 -l 20k c:/tmp
+
+-> Hash c:\tmp, skip files less than 20 Kbytes in size (-l 20k), use uppercase (-u) for CRC32 hash (-crc), prefix each line with 'CRC32' (-g),
+and do not show file sizes (-ss 0).
+
+
+
 
 This is released under the Zlib Licence (https://opensource.org/licenses/Zlib).
 
