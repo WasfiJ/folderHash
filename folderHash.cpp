@@ -61,7 +61,7 @@ short process1File(LPCSTR fn);
 std::atomic<bool> stopProcessing(false);
 
 size_t nbChunks, chunkSz, thMax = 2;
-size_t minFilesChunk = 10, maxFilesChunk = 100, prChunkSz = 4000;
+size_t minFilesChunk = 10, maxFilesChunk = 100;
 UINT thIdx = 0;
 HANDLE hMutex;
 vector<bool> slots;
@@ -107,8 +107,6 @@ template <typename T, class ... Ts> inline void chkVectResz(size_t count, vector
 inline LPSTR catStr(std::initializer_list<LPCSTR> list);
 inline LPWSTR catWstr(std::initializer_list<LPCWSTR> list);
 
-bool g_bLowerCase = false;
-
 LPSTR toupper(const string& s){
   string ret(s.size(), char());
   for(unsigned int i = 0; i < s.size(); ++i)
@@ -137,22 +135,20 @@ inline short str2Sz(string& s, size_t& nbr){
 }
 
 // somwhere on https://stackoverflow.com
-char * humanSize(size_t bytes){
+char * humanSize(size_t bytes){  
+  char *suffix[] = {"B", "KB", "MB", "GB", "TB"};
+  char length = sizeof(suffix) / sizeof(suffix[0]);
   
-	char *suffix[] = {"B", "KB", "MB", "GB", "TB"};
-	char length = sizeof(suffix) / sizeof(suffix[0]);
-
-	int i = 0;
-	double dblBytes = (double) bytes;
-
-	if (bytes > 1024) {
-		for (i = 0; (bytes / 1024) > 0 && i<length-1; i++, bytes /= 1024)
-			dblBytes = bytes / 1024.0;
-	}
-
-	char *output; chkAlloc(200,output);
-	sprintf(output, "%.02lf %s", dblBytes, suffix[i]);
-	return output;
+  int i = 0;
+  double dblBytes = (double) bytes;
+  if (bytes > 1024) {
+    for (i = 0; (bytes / 1024) > 0 && i<length-1; i++, bytes /= 1024)
+      dblBytes = bytes / 1024.0;
+  }
+  
+  char *output; chkAlloc(200,output);
+  sprintf(output, "%.02lf %s", dblBytes, suffix[i]);
+  return output;
 }
 
 bool userListFile = false, userOutFile = false, outFileAppend = false, allAlgos = false, computeXX = false, computeCrc32 = false;
@@ -556,8 +552,7 @@ DWORD WINAPI processFiles(LPVOID p) {
     Lock();
       for (k = 0; k < nbChunks; k++)
         if (!slots[k]){ slots[k] = gotSlot = true; break; }  // slot/chunk k is taken now
-      //if (thId == 0) thId = ++thIdx; 
-    unLock(); 
+      unLock(); 
     if (!gotSlot) return 0; // no-mo-chunks
 
     if(chewChunk(k+1)!=0 && !IgnoreErr){ stopProcessing = true; return 1; }
@@ -685,7 +680,7 @@ short process1File(LPCSTR fn) {
   if((szLarger && fSz<leastSz) || (szSmaller && fSz>mostSz)) return 0;
   
   XXHash64 xxhash(0); CRC32 dCrc32; MD5 dMd5; SHA1 dSha1; SHA256 dSha2;       
-  Keccak dKeccak(Keccak::Keccak256); SHA3 dSha3  (SHA3::Bits256);
+  Keccak dKeccak(Keccak::Keccak256); SHA3 dSha3(SHA3::Bits256);
 
   char* buffer; chkAlloc(BufferSize,buffer);
   while (ReadFile(f, buffer, (DWORD) BufferSize, &nBytesRead, nullptr) && nBytesRead){
