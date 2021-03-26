@@ -44,9 +44,9 @@ Example output, with relevant options per field :
    -ld, --list-dirs  : in folder mode, print each folder before its files
 
    File names/paths
-   -nf, --no-fname   : do not show file path/name, only the hash (file mode)
+   -nf, --no-fname : do not show file path/name, only the hash (file mode)
    -sl, --my-slash : use my style (/ or \) for paths. The first encountered
-       forward or backword slash in provided file/folder name will be used.
+       forward or backward slash in provided file/folder name will be used.
    -sb, --basename : show file names, not full paths (overridden by -nf)
    -su, --unix-path: show Unix-style paths (forward slash '/' separator)
        Overrides -sl
