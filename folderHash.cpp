@@ -1,8 +1,8 @@
 // //////////////////////////////////////////////////////////
 // folderHash.cpp
-// Copyright (c) 2021,2022 Wasfi JAOUAD. All rights reserved.
-// v1.0 2021.03
-// Verstaile CLI to portable hash library by Stephan Brumme (all rights reserved).
+// Copyright (c) 2021 Wasfi JAOUAD. All rights reserved.
+// v1.1 2021.03
+// Verstaile CLI to the Portable Hashing Library by Stephan Brumme (all rights reserved).
 
 
 #include <windows.h>
@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <thread>
 
+#define FH_VERSION "1.1"
 using namespace std;
 
 #define CLK chrono::high_resolution_clock
@@ -52,12 +53,13 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSz,
 
 void usage();
 
+// each cycle processes about 1 MByte (divisible by 144 => improves Keccak/SHA3 performance)
 const size_t BufferSize = 144*7*4;
 
 DWORD WINAPI processFiles(LPVOID p);
 LPSTR* outT;
 short processFile(size_t idx);
-short process1File(LPCSTR fn);
+short process1File(LPCSTR fn, LPWSTR wfn);
 std::atomic<bool> stopProcessing(false);
 
 size_t nbChunks, chunkSz, thMax = 2;
@@ -75,10 +77,11 @@ inline void flushErr(LPCSTR format, ...);
 inline void flushOut(LPCSTR format, ...);
 inline char * wide2uf8(LPCWSTR);
 inline wchar_t * uf8toWide(LPCCH);
-//inline LPWSTR catWstr(size_t firstArg, ...);
+#define nfree(A) free(A); A=nullptr;
 #define sysErr 10000+GetLastError()
 inline void printErr(LPCSTR msg, LONG errCode, int exitCode=0);
-inline void strCopy(LPSTR dst, size_t sz, LPCSTR src, bool truncate=false);
+inline void  strCopy(LPSTR dst,  size_t sz, LPCSTR src, bool truncate=false);
+inline void wstrCopy(LPWSTR dst, size_t sz, LPWSTR src, bool truncate=false);
 inline void checkSnprintfA(HRESULT,size_t);
 #define snprintfA(dst,sz,fmt,...) checkSnprintfA(StringCchPrintfA(dst,sz,fmt, ##__VA_ARGS__),sz)
 inline void formatDur(__int64 dur);
@@ -87,14 +90,15 @@ size_t folderIdx = 0, fileCnt = 0, hashedCnt = 0, totalSzHashed = 0, emptyDirsCn
 vector<size_t> fileIndxes;
 struct dirCounts { size_t sz, nbFiles; };
 struct fsObj {
-  LPSTR path;
+  LPSTR path, hsz = nullptr; 
+  LPWSTR wpath;
   size_t sz, idx, parent, nbFiles; 
-  bool isdir;
+  bool isdir, skip = false;
 };
 vector<fsObj*> items;
 size_t idx = -1;
-dirCounts* travel(LPSTR const & path, size_t folderIdx, size_t& LargestFileSz);
-short szWidth = 12;
+dirCounts* travel(LPWSTR const & wpath, LPSTR const & path, size_t folderIdx, size_t& LargestFileSz);
+short szWidth = 0;
 
 inline void chkAlloc(size_t count) {};
 template <typename T, class ... Ts> inline void chkAlloc(size_t count, T*& x, Ts&& ...args);
@@ -114,7 +118,6 @@ LPSTR toupper(const string& s){
   LPSTR a = nullptr; return (LPSTR) memcpy(chkstrAlloc(1+ret.size(),a), ret.c_str(), 1+ret.size());
 }
 
-// Human readable -> number
 inline short str2Sz(string& s, size_t& nbr){
   if(s.find_first_not_of(" 0123456789kKmMgG")!=string::npos){ 
     cerr << "\n  Error: not a supported file size designation: '"<<s<<"'"<<endl; return 3; }
@@ -134,31 +137,36 @@ inline short str2Sz(string& s, size_t& nbr){
   return 0;
 }
 
-// somwhere on https://stackoverflow.com
-char * humanSize(size_t bytes){  
-  char *suffix[] = {"B", "KB", "MB", "GB", "TB"};
-  char length = sizeof(suffix) / sizeof(suffix[0]);
+char * humanSize(size_t bytes){
   
+  char *suffix[] = {"bytes", "KB", "MB", "GB", "TB"};
+  char length = sizeof(suffix) / sizeof(suffix[0]);
+
   int i = 0;
   double dblBytes = (double) bytes;
-  if (bytes > 1024) {
+
+  if(bytes > 1024) { 
     for (i = 0; (bytes / 1024) > 0 && i<length-1; i++, bytes /= 1024)
       dblBytes = bytes / 1024.0;
   }
-  
-  char *output; chkAlloc(200,output);
-  sprintf(output, "%.02lf %s", dblBytes, suffix[i]);
+
+  char *output; chkAlloc(32,output);
+  if(bytes <= 1024) sprintf(output, "%zu bytes", bytes);
+  else sprintf(output, "%zu %s", bytes, suffix[i]);
   return output;
 }
 
 bool userListFile = false, userOutFile = false, outFileAppend = false, allAlgos = false, computeXX = false, computeCrc32 = false;
 bool computeMd5 = false, computeSha1 = false, computeSha2 = false, computeKeccak = false, computeSha3 = false, beQuiet = false;
 bool showStats = false, showDur = false, listEmptyDirs = false, lowerCase = true, noFname = false, sizePrefix = true, filesByBlock = false;
-bool algoPrefix = false, pretty = true, userSlash = false, baseNames = false, unixPath = false, cygPath = false, sysFiles = false;
+bool algoPrefix = false, pretty = true, userSlash = false, baseNames = false, pathAsis = false, unixPath = false, cygPath = false;
 bool noHidden = false, incPattrn = false, excPattern = false, szSmaller = false, szLarger = false, newerThan = false, olderThan = false;
 bool cmpTime = false, userThreadCnt = false, IgnoreErr = true, delEmptyDirs = false, delEmptyFiles = false, delEmptyBoth = false;
+bool listDirs = false, sysFiles = false, humanReadableSz = false;
 
-size_t leastSz = 0, mostSz = 0;
+bool algoPrefixU = false, filesByBlockU = false;
+
+size_t leastSz = 0, mostSz = 0; size_t userThreadCntN = 0, max2List = 0;
 
 void chunkLogic(){
   if(thMax == 1 || fileCnt <= thMax || fileCnt<=minFilesChunk){ chunkSz = fileCnt; nbChunks = thMax = 1; return; }
@@ -171,12 +179,14 @@ void chunkLogic(){
   if(thMax==1) return;
   // distribute work load uniformly
   size_t uChunkSz = (-1+thMax+fileCnt) / thMax; if(uChunkSz>=nbChunks) return;
-  if( uChunkSz < (8*minFilesChunk/10)){ thMax--; chunkLogic(); return; }
+  if( uChunkSz < (8*minFilesChunk/10)){ thMax--; chunkLogic(); return; } //flushOut("\n#thMax = %lu\n", thMax); 
   else{ chunkSz = uChunkSz; nbChunks = (-1+chunkSz+fileCnt) / chunkSz; }
 }
 
 void usage(){
-    cout << endl << " Usage:" << endl << endl;
+    cout <<"folderHash v"<<FH_VERSION<<" for Windows by Wasfi JAOUAD (c) 2021\n";
+    cout <<"Versatile command-line interface to the Portable Hashing Library\n(https://create.stephan-brumme.com/hash-library/)\n\n";
+    cout << " Usage:" << endl << endl;
 
     cout << "  folderHash [algos] [opts] file/folder                                     " << endl;
     cout << "  folderHash -h / --help : print this message                               " << endl << endl;
@@ -216,24 +226,29 @@ void usage(){
     cout << " * Output formatting                                                        " << endl;
     cout << "   -u,  --uppercase  : use uppercase for hashes                             " << endl;
     cout << "   -ss, --size       : [on] prefix each line of output with file size       " << endl;
+    cout << "   -hs, --human-size : show human-readable files sizes, not byte counts     " << endl;
     cout << "   -g : prefix each line of output with hash algorithm name                 " << endl;
     cout << "        This is on by default if multiple algos are to be used              " << endl;
     cout << "   -f,  --pretty     : [on] show formatted output (aligned columns)         " << endl;
     cout << "   -fb, --file-block : add an empty line after each file                    " << endl;
-    cout << "       This is on by default if multiple algos are to be used               " << endl << endl;
+    cout << "       This is on by default if multiple algos are to be used               " << endl;
+    cout << "   -ld, --list-dirs  : in folder mode, print each folder before its files   " << endl << endl;
     
     cout << "   File names/paths                                                         " << endl;
     cout << "   -nf, --no-fname   : do not show file path/name, only the hash (file mode)" << endl;
     cout << "   -sl, --my-slash : use my style (/ or \\) for paths. The first encountered" << endl;
     cout << "       forward or backword slash in provided file/folder name will be used. " << endl;
-    cout << "   -sb, --basename : show file names, not full paths (overridden by -nf)   " << endl;
+    cout << "   -sb, --basename : show file names, not full paths (overridden by -nf)    " << endl;
     cout << "   -su, --unix-path: show Unix-style paths (forward slash '/' separator)    " << endl;
-    cout << "       Overrides -sl                                                        " << endl << endl;
+    cout << "       Overrides -sl                                                        " << endl;
+    cout << "   -pa, --path-asis: show provided path as it is, do not clean it up        " << endl;
+    cout << "       This applies to provided path ; for subfolders, -sl & -su still apply" << endl << endl;
   //cout << "   -sc, --cyg-path : show Cygwin-style paths (/cygdrive/..)                 " << endl;
 
     cout << " * Filtering options                                                        " << endl;
-  //cout << "   -s, --sys-files  : include system files/folders (not recommended)        " << endl;
-  //cout << "   -h, --no-hidden  : exclude hidden files                                  " << endl;
+    cout << "   -n, --at-most N  : stop after listing N files                            " << endl;
+    cout << "   -s, --sys-files  : include system files/folders (not recommended)        " << endl;
+    cout << "   -h, --no-hidden  : exclude hidden files                                  " << endl;
   //cout << "   -x pattern       : skip files matching 'pattern' (case insensitive)      " << endl;
   //cout << "      multiple patterns suported: -x *.txt -x \"a dir/\" ('a dir/' or       " << endl;
   //cout << "      'a dir\\') -> all text files and all files under 'a dir' folder       " << endl;
@@ -249,7 +264,8 @@ void usage(){
   //cout << "       A can be: M or 'modification' (default), C or creation, A or access  " << endl << endl;
     cout << endl;
     cout << " * Operation                                                                " << endl;
-  //cout << "   -t N, --threads N : use N parallel threads at most (not recommended)     " << endl;
+    cout << "   -t N, --threads N : use N parallel threads at most. This will be reduced " << endl;
+    cout << "       to the number of logical processors on your system if needed         " << endl;
     cout << "   -k, --keep-going       : [on] do not stop on error                       " << endl;
   //cout << "   -dd, --del-empty-dirs  : delete empty folders                            " << endl;
   //cout << "   -df, --del-empty-files : delete empty files                              " << endl;
@@ -307,15 +323,19 @@ int main(int argc, char** argv) {
       if((i+1)<argc) onOffarg(string(argv[i+1]),listEmptyDirs,i,lastOptI); continue; }
     if(opt=="-u"||opt=="--uppercase"){ lowerCase = false; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),lowerCase,i,lastOptI); continue; }
+    if(opt=="-ld"||opt=="--list-dirs"){ listDirs = true; lastOptI = i;
+      if((i+1)<argc) onOffarg(string(argv[i+1]),listDirs,i,lastOptI); continue; }
     if(opt=="-nf"||opt=="--no-fname"){ noFname = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),noFname,i,lastOptI); continue; }
     if(opt=="-ss"||opt=="--size"){ sizePrefix = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),sizePrefix,i,lastOptI); continue; }
-    if(opt=="-g"){ algoPrefix = true; lastOptI = i;
+    if(opt=="-hs"||opt=="--human-size"){ humanReadableSz = true; lastOptI = i;
+      if((i+1)<argc) onOffarg(string(argv[i+1]),humanReadableSz,i,lastOptI); continue; }
+    if(opt=="-g"){ algoPrefix = algoPrefixU = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),algoPrefix,i,lastOptI); continue; }
     if(opt=="-f"||opt=="--pretty"){ pretty = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),pretty,i,lastOptI); continue; }
-    if(opt=="-fb"||opt=="--file-block"){ filesByBlock = true; lastOptI = i;
+    if(opt=="-fb"||opt=="--file-block"){ filesByBlock = filesByBlockU = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),filesByBlock,i,lastOptI); continue; }
     if(opt=="-sl"||opt=="--my-slash"){ userSlash = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),userSlash,i,lastOptI); continue; }
@@ -323,8 +343,18 @@ int main(int argc, char** argv) {
       if((i+1)<argc) onOffarg(string(argv[i+1]),baseNames,i,lastOptI); continue; }
     if(opt=="-su"||opt=="--unix-path"){ unixPath = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),unixPath,i,lastOptI); continue; }
+    if(opt=="-su"||opt=="--unix-path"){ unixPath = true; lastOptI = i;
+      if((i+1)<argc) onOffarg(string(argv[i+1]),unixPath,i,lastOptI); continue; }
+    if(opt=="-pa"||opt=="--path-asis"){ pathAsis = true; lastOptI = i;
+      if((i+1)<argc) onOffarg(string(argv[i+1]),pathAsis,i,lastOptI); continue; }
     if(opt=="-sc"||opt=="--cyg-path"){ cygPath = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),cygPath,i,lastOptI); continue; }
+    if(opt=="-n"||opt=="--at-most"){
+      if(i==argc-1) noArg(opt,"maximum count of files to list");  
+      if(argv[i+1][0]=='-' || (max2List = strtoul(argv[i+1],nullptr,0))==0){ 
+        cerr << "\n Error: expecting a positive number after option '"<<opt<<"', not '"<<argv[i+1]<<"'\n" ; seekHelp(3); }
+      if(errno==ERANGE){ cerr << "\n Error: "<<opt<<": maximum count of files to list: "<<argv[i+1]<<": "; perror(""); seekHelp(3); }
+      lastOptI = ++i; continue; }
     if(opt=="-s"||opt=="--sys-files"){ sysFiles = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),sysFiles,i,lastOptI); continue; }
     if(opt=="-h"||opt=="--no-hidden"){ noHidden = true; lastOptI = i;
@@ -333,18 +363,23 @@ int main(int argc, char** argv) {
     if(opt=="-p"){ excPattern = true; continue; }
     if(opt=="-l"||opt=="--smaller"){ szSmaller = true; lastOptI = i;
       if(i==argc-1) noArg(opt,"file size");
-      if(argv[i+1][0]=='-'){ cerr << "\n Error: expecting a positive number after option '"<<opt<<"'\n\n"; seekHelp(3); }
+      if(argv[i+1][0]=='-'){ cerr << "\n Error: expecting a positive number after option '"<<opt<<"'\n"; seekHelp(3); }
       if(0!=str2Sz(string(argv[i+1]), mostSz)) seekHelp(3);
       lastOptI = ++i; continue; }
     if(opt=="-m"||opt=="--larger"){ szLarger = true; lastOptI = i;
       if(i==argc-1) noArg(opt,"file size");
-      if(argv[i+1][0]=='-'){ cerr << "\n Error: expecting a positive number after option '"<<opt<<"'\n\n"; seekHelp(3); }
+      if(argv[i+1][0]=='-'){ cerr << "\n Error: expecting a positive number after option '"<<opt<<"'\n"; seekHelp(3); }
       if(0!=str2Sz(string(argv[i+1]), leastSz)) seekHelp(3);
       lastOptI = ++i; continue; }
     if(opt=="-n"||opt=="--newer"){ newerThan = true; lastOptI = i; continue; }
     if(opt=="-O"||opt=="--older"){ olderThan = true; lastOptI = i; continue; }
     if(opt=="-T"||opt=="--cmp-time"){ cmpTime = true; lastOptI = i; continue; }
-    if(opt=="-t"||opt=="--threads"){ userThreadCnt = true; lastOptI = i; continue; }
+    if(opt=="-t"||opt=="--threads"){ userThreadCnt = true; 
+      if(i==argc-1) noArg(opt,"thread count");  
+      if(argv[i+1][0]=='-' || (userThreadCntN = strtoul(argv[i+1],nullptr,0))==0){ 
+        cerr << "\n Error: expecting a positive number after option '"<<opt<<"', not '"<<argv[i+1]<<"'\n" ; seekHelp(3); }
+      if(errno==ERANGE){ cerr << "\n Error: "<<opt<<": maximum number of threads: "<<argv[i+1]<<": "; perror(""); seekHelp(3); }
+      lastOptI = ++i; continue; }
     if(opt=="-k"||opt=="--keep-going"){ IgnoreErr = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),IgnoreErr,i,lastOptI); continue; }
     if(opt=="-dd"||opt=="--del-empty-dirs"){ delEmptyDirs = true; lastOptI = i;
@@ -361,12 +396,12 @@ int main(int argc, char** argv) {
     seekHelp(1); }
   
   if(multiAlgos>0 || 
-     !(allAlgos || computeXX || computeCrc32 || computeKeccak || computeMd5 || computeSha1 || computeSha2 || computeSha3)) 
-     algoPrefix = filesByBlock = true;
+     !(allAlgos || computeXX || computeCrc32 || computeKeccak || computeMd5 || computeSha1 || computeSha2 || computeSha3)) {
+     if(!algoPrefixU) algoPrefix = true; if(!filesByBlockU) filesByBlock = true; }
   if(allAlgos || 
      !(computeXX || computeCrc32 || computeKeccak || computeMd5 || computeSha1 || computeSha2 || computeSha3)) {
      computeXX = computeCrc32 = computeKeccak = computeMd5 = computeSha1 = computeSha2 = computeSha3 = true;
-     algoPrefix = filesByBlock = true; }
+     if(!algoPrefixU) algoPrefix = true; if(!filesByBlockU) filesByBlock = true;; }
 
   if(beQuiet) showDur = showStats = filesByBlock = 0;
   
@@ -379,64 +414,111 @@ int main(int argc, char** argv) {
   
   // path valid ?
   LPWSTR pathW = arglist[nbArgs-1];
-  LPSTR path = argv[argc-1];
+  LPSTR path = argv[argc-1];  
 
-  LPWSTR fpath = nullptr;  chkAlloc(32768,fpath);
+  LPWSTR fpath;  chkAlloc(32768,fpath);
   int mUNC = strncmp(path,"\\\\?\\",4);
-  { DWORD plen; LPWSTR tmp;
-    if(mUNC==0) plen = GetFullPathNameW(pathW,32768,fpath,nullptr);
-    else{ plen = GetFullPathNameW(tmp=catWstr({L"\\\\?\\",pathW}),32768,fpath,nullptr); free(tmp); }
-    if(0==plen) printErr(catStr({"\n Error: GetFullPathNameW(): ",path}), sysErr, 77);
-    if(32767<plen){ flushErr("\n  Error: path too long: %100.100s..\n\n", path); return 78; }
+  { WCHAR *slash = pathW;
+    while(nullptr != (slash = wcsstr(slash, L"/"))) *slash = L'\\';
+
+    DWORD plen; LPWSTR tmp = nullptr; HANDLE f;    
+    #define OPEN_FILE GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0,                          nullptr
+    #define OPEN_DIR  GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr
+    if(mUNC==0) f = (INVALID_HANDLE_VALUE == (f = CreateFileW(pathW, OPEN_DIR))) ? CreateFileW(pathW, OPEN_FILE) : f;
+    else { tmp = catWstr({ L"\\\\?\\",pathW }); f = CreateFileW(tmp, OPEN_DIR); nfree(tmp); f = (f==INVALID_HANDLE_VALUE) ?
+      CreateFileW(tmp = catWstr({ L"\\\\?\\",pathW }), OPEN_FILE) : f; nfree(tmp); }
+    if(f==INVALID_HANDLE_VALUE) printErr(catStr({"Error opening: ",path}),sysErr,7);
+    
+    DWORD maxPath = 2<<15;
+    typedef DWORD (WINAPI* pfGetFinalPath)(HANDLE, LPWSTR, DWORD, DWORD);
+    pfGetFinalPath gfpbh = (pfGetFinalPath) GetProcAddress(GetModuleHandleA("kernel32"), "GetFinalPathNameByHandleW");
+    if(gfpbh){ plen = gfpbh(f,fpath, maxPath*sizeof(WCHAR),0);
+      if(0==plen) printErr(catStr({"Error: GetFinalPathNameByHandleW(): ",path}), sysErr, 8);
+      if(maxPath<1+plen){ flushErr("\n  Error: path too long: %-100.100s..\n\n", path); return 9; }
+    }
+    else {
+      if(mUNC==0) plen = GetFullPathNameW(pathW, maxPath*sizeof(WCHAR),fpath,nullptr);
+      else{ plen = GetFullPathNameW(tmp = catWstr({L"\\\\?\\",pathW}), maxPath,fpath,nullptr); nfree(tmp); }
+      if(0==plen) printErr(catStr({"\n Error: GetFullPathNameW(): ",path}), sysErr, 77);
+      if(maxPath<1+plen){ flushErr("\n  Error: path too long: %-100.100s..\n\n", path); return 78; }
+    }
+    CloseHandle(f);
   }
+  LocalFree(arglist);
 
   DWORD attr = GetFileAttributesW(fpath);
   if(attr==INVALID_FILE_ATTRIBUTES) printErr(path, sysErr, 22);
   
-  if(nullptr==memmove(path = wide2uf8(fpath),path+4,strlen(path))) return 1;
+  if(pathAsis){
+    size_t n = strlen(path)-1; if(path[n]=='\\' || path[n]=='/') path[n] = '\0';
+  } 
+  else
+    if(nullptr==memmove(path = wide2uf8(fpath),path+4,strlen(path))) return 1;
   
-  // forward slash ?
-  if(unixPath || userSlash) {  
-    if(!unixPath) {
+  if(unixPath || userSlash) {    
+    if(!unixPath && userSlash) {
       char *slash = strstr(argv[argc-1],"/"), *bslash = strstr(argv[argc-1],"\\");
            if(nullptr==slash && bslash==nullptr) forwardSlash = 0;
       else if(nullptr!=slash && bslash==nullptr) forwardSlash = 1;
       else if(nullptr==slash && bslash!=nullptr) forwardSlash = 0;
       else if(slash<bslash) forwardSlash = 1;
       else if(bslash<slash) forwardSlash = 0;
-    } else forwardSlash = 1;
+    } 
+    if(unixPath) forwardSlash = 1;
     
-    char *bslash = strstr(path,"\\");
-    if(forwardSlash && bslash!=nullptr){ *bslash = '/'; while(nullptr!=(bslash = strstr(bslash,"\\"))) *bslash = '/'; }
+    CHAR *bslash = path;
+    if(!pathAsis && forwardSlash==1) while(nullptr!=(bslash = strstr(bslash,"\\"))) *bslash = '/';
   }
 
   size_t LargestFileSz = 0;
-  if(attr&FILE_ATTRIBUTE_DIRECTORY){ 
-    size_t n = strlen(path)-1; if(path[n]=='\\' || path[n]=='/') path[n] = '\0';
-    dirCounts *d = travel(path, -1, LargestFileSz);
-    items[0]->sz = d->sz; items[0]->nbFiles = d->nbFiles; delete[] d;
-    szWidth = (short) ::to_string(LargestFileSz).length();
+  if(attr&FILE_ATTRIBUTE_DIRECTORY){
+    dirCounts *dummy = travel(fpath, path, -1, LargestFileSz); free(dummy);
   }
   else { if(showStats) flushErr("\n");
-    process1File(path); 
+    process1File(path,fpath); 
     long long dur = DURµs( CLK::now() - start).count();
     if(showStats){ flushErr("\nHashed %zu bytes",totalSzHashed);
-      if(totalSzHashed>0) flushErr(" (%s) in total, average data rate: %s/s\n", 
+      if(totalSzHashed>1024) flushErr(" (%s), average data rate: %s/s\n", 
         humanSize(totalSzHashed), humanSize(1000000*totalSzHashed/dur));
       else flushErr("\n"); }
     if(showDur) formatDur(dur); return 0; 
   }
   
-  LocalFree(arglist);
-  
-  if(fileCnt==0) return 0;
+  if(fileCnt==0){
+    if(showStats) flushErr("\n#Files = 0\n");
+    if(listEmptyDirs){ flushOut("\n");
+      flushOut("%zu empty folder%s: \n", emptyDirsCnt, emptyDirsCnt==1? "":"s");
+      for(auto fo: items) if(fo->isdir && fo->sz==0) flushOut("  %s\n", fo->path);
+    }
+    if(showStats) flushErr("\nHashed 0 bytes. Folder size: %s.\n", humanSize(items[0]->sz));
+    else if(listEmptyDirs) flushErr("\n");
+    if(showDur) formatDur( DURµs(CLK::now() - start).count() );
+    
+    return 0;
+  }
 
+  size_t LargestFileSz2show = 0, j = 0;
+  for(auto i: items){  if(i->isdir) continue;
+    size_t sz = i->sz;
+    if((szLarger && sz<leastSz) || (szSmaller && sz>mostSz)){ i->skip = true; continue; }
+    if((attr = GetFileAttributesW(i->wpath))==INVALID_FILE_ATTRIBUTES){ if(IgnoreErr) printErr(path, sysErr, 0);
+      else printErr(path, sysErr, 23); continue; }
+    if( noHidden && attr&FILE_ATTRIBUTE_HIDDEN){ i->skip = true; continue; }
+    if(!sysFiles && attr&FILE_ATTRIBUTE_SYSTEM){ i->skip = true; continue; }
+    
+    if(max2List>0 && ++j>max2List) break;
+    if(humanReadableSz){ i->hsz = humanSize(sz); short n = (short)strlen(i->hsz); szWidth = szWidth<n ? n:szWidth; }
+    else LargestFileSz2show = LargestFileSz2show<sz ? sz:LargestFileSz2show;
+  }
+  if(!humanReadableSz) szWidth = (short) ::to_string(LargestFileSz2show).length();
+   
+  
   SYSTEM_INFO *sysInfo; chkAlloc(1,sysInfo); GetSystemInfo(&*sysInfo); thMax = sysInfo->dwNumberOfProcessors; free(sysInfo);
-  if(thMax<2) thMax = 2;
+  if(userThreadCnt && userThreadCntN<=thMax) thMax = userThreadCntN;
+  if(thMax<2 && userThreadCntN!=1) thMax = 2;
   chunkLogic();
   if(showStats){ flushErr("\n#Files = %lu\n", fileCnt);
     if(thMax>1) flushErr("  Processing files by packs of %zu (%zu packs)\n  Using %zu workers\n", chunkSz, nbChunks, thMax);
-    else flushErr("\n");
   }
 
   size_t mis = 0, totalMiss = 0, totalNoFile = 0;
@@ -447,12 +529,33 @@ int main(int argc, char** argv) {
   filesByBlock = filesByBlock && hashedCnt>1;
   if(showDur || showStats || filesByBlock || listEmptyDirs) flushErr("\n");
   LPCSTR fBlock = filesByBlock ? "\n":"";
-  for(size_t i=0;i<fileCnt;i++) if(nullptr!=outT[i]) { flushOut("%s%s\n",outT[i],fBlock); delete[] outT[i]; }
+  if(max2List==0) max2List = hashedCnt;
+  size_t i, sz, dirIdx; bool *folderDisp; chkAlloc(fileCnt,folderDisp); j = 0;
+  for(i=0;i<fileCnt;i++) if(nullptr!=outT[i]) { 
+    if(listDirs){ dirIdx = items[fileIndxes[i]]->parent;
+      if(!folderDisp[dirIdx]){ folderDisp[dirIdx] = true; sz = items[dirIdx]->sz;
+        if(humanReadableSz)
+          flushOut("%s: %s, %zu files\n",         items[dirIdx]->path, humanSize(sz),   items[dirIdx]->nbFiles);
+        else
+          flushOut("%s: %zu byte%s, %zu files\n", items[dirIdx]->path, sz,sz==1?"":"s", items[dirIdx]->nbFiles);
+      }
+    }
+    flushOut("%s%s\n",outT[i],fBlock); delete[] outT[i]; if(++j==(max2List-1)) break; }
+  for(size_t k=i+1;k<fileCnt;k++) if(nullptr!=outT[k]) { 
+    if(listDirs){ dirIdx = items[fileIndxes[k]]->parent;
+      if(!folderDisp[dirIdx]){ folderDisp[dirIdx] = true; sz = items[dirIdx]->sz;
+        if(humanReadableSz)
+          flushOut("%s: %s, %zu files\n",         items[dirIdx]->path, humanSize(sz),   items[dirIdx]->nbFiles);
+        else
+          flushOut("%s: %zu byte%s, %zu files\n", items[dirIdx]->path, sz,sz==1?"":"s", items[dirIdx]->nbFiles);
+      }
+    }
+    flushOut("%s%s",outT[k],fBlock); flushErr("\n"); delete[] outT[k]; break; }
   fileIndxes = vector<size_t>(); slots = vector<bool>(); delete[] outT;
   
-  if(listEmptyDirs){ if(!filesByBlock) flushErr("\n");
-    flushErr("%zu empty folder%s: \n", emptyDirsCnt, emptyDirsCnt==1? "":"s");
-    for(auto fo: items) if(fo->isdir && fo->sz==0) flushErr("  %s\n", fo->path);
+  if(listEmptyDirs){ if(!filesByBlock) flushOut("\n");
+    flushOut("%zu empty folder%s: \n", emptyDirsCnt, emptyDirsCnt==1? "":"s");
+    for(auto fo: items) if(fo->isdir && fo->sz==0) flushOut("  %s\n", fo->path);
   }
 
   if(showDur || showStats){ if(listEmptyDirs || !filesByBlock) flushErr("\n"); }
@@ -462,11 +565,10 @@ int main(int argc, char** argv) {
   long long dur = DURµs(CLK::now() - start).count();
 
   if(showStats){ 
-    flushErr("Hashed %zu bytes (%s", totalSzHashed, humanSize(totalSzHashed));
-    if(hashedCnt<fileCnt) flushErr("/%s",humanSize(items[0]->sz));
-    flushErr(") in total");
-    if(hashedCnt!=fileCnt) flushErr(" (%zu file%s out of %zu)", hashedCnt, hashedCnt==1?"":"s", fileCnt);
-    flushErr(", average data rate: %s/s\n", humanSize(1000000*totalSzHashed/dur)); 
+    flushErr("Hashed %zu bytes (%s).", totalSzHashed, humanSize(totalSzHashed));
+    flushErr(" Folder size: %s.",humanSize(items[0]->sz));
+    if(hashedCnt!=fileCnt) flushErr(" Processed %zu file%s.", hashedCnt, hashedCnt==1?"":"s");
+    flushErr(" Average data rate: %s/s\n", humanSize(1000000*totalSzHashed/dur)); 
   }
 
   if(showDur) formatDur( dur );
@@ -491,37 +593,42 @@ void runThreads(){
     printErr("Error: system failure (wait multi).", sysErr, 60);
 
   for(p=0; p<thMax; p++) { GetExitCodeThread(hThread[p], &dwExitCode[p]);  CloseHandle(hThread[p]); }
+
 }
 
-dirCounts* travel(LPSTR const & path, size_t parentIdx, size_t& LargestFileSz) {
+dirCounts* travel(LPWSTR const & wpath, LPSTR const & path, size_t parentIdx, size_t& LargestFileSz) {
 
-  WIN32_FIND_DATA wfd; LPWSTR tmp, wpath = uf8toWide(path);
-  HANDLE hFind;
-  hFind = FindFirstFileW(tmp=catWstr({wpath,L"\\*"}), &wfd); delete[] wpath; free(tmp);
-  if(INVALID_HANDLE_VALUE == hFind) printErr(catStr({"Error: FindNextFileW(): ",path}), sysErr, 52);
-  
+  //flushOut(" wPath_ = .%s.\n", wide2uf8(wpath));
   size_t folderIdx = 0, sz; fsObj *fo; dirCounts *dc; 
   chkAlloc(1, dc); dc->sz = dc->nbFiles = 0;
-  chkAlloc(1, fo); chkAlloc(sz = 1+strlen(path), fo->path);
-  strCopy(fo->path, sz, path); fo->nbFiles = fo->sz = 0; fo->isdir = true; fo->parent = parentIdx; 
+  chkAlloc(1, fo);
+  chkAlloc(sz = 1+strlen(path),  fo->path);   strCopy(fo->path,  sz, path);
+  chkAlloc(sz = 1+wcslen(wpath), fo->wpath); wstrCopy(fo->wpath, sz, wpath);
+  fo->nbFiles = fo->sz = 0; fo->isdir = true; fo->parent = parentIdx; 
   fo->idx = folderIdx = ++idx; items.push_back(fo);
   
-  if(ERROR_FILE_NOT_FOUND == GetLastError()) return dc;
+  WIN32_FIND_DATA wfd; WCHAR * tmp;
+  HANDLE hFind = FindFirstFileW(tmp = catWstr({wpath,L"\\*"}), &wfd); auto err = GetLastError();
+  if(INVALID_HANDLE_VALUE == hFind) printErr(catStr({"Error: FindFirstFileW(): ",wide2uf8(wpath)}), 10000+err, 52);
+  free(tmp);
+  if(ERROR_FILE_NOT_FOUND == err) return dc;
   
-  size_t folderSz = 0, nbFiles = 0; LPSTR fn, catp;
-  vector<shared_ptr<CHAR>> dirs;
+  size_t folderSz = 0, nbFiles = 0; LPSTR fn, catp; LPWSTR wcatp;
+  vector<shared_ptr<WCHAR>> wdirs; vector<shared_ptr<CHAR>> dirs;
   do { 
     if(!lstrcmpW(wfd.cFileName, L".") || !lstrcmpW(wfd.cFileName, L"..") || 
-       wcsstr(wfd.cFileName, L"$RECYCLE.BIN") ||
+       wcsstr(wfd.cFileName, L"\\$RECYCLE.BIN") ||
        wcsstr(wfd.cFileName, L"System Volume Information")) continue;
     
     unique_ptr<CHAR> q( fn = wide2uf8(wfd.cFileName));
     shared_ptr<CHAR> p( catp = catStr({path,forwardSlash==1?"/":"\\",fn}) );
+    shared_ptr<WCHAR> wp( wcatp = catWstr({wpath,L"\\",wfd.cFileName}) );
     sz = 2+strlen(fn)+strlen(path);
     
-    if(wfd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){ dirs.push_back(p); continue; }
+    if(wfd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){ wdirs.push_back(wp); dirs.push_back(p); continue; }
     
     chkAlloc(1, fo); chkAlloc(sz, fo->path); strCopy(fo->path, sz, catp);
+    chkAlloc(sz = 1+wcslen(wcatp), fo->wpath); wstrCopy(fo->wpath, sz, wcatp);
     fo->parent = folderIdx; fo->idx = ++idx; fo->isdir = false; fo->nbFiles = 0;
     fo->sz = sz = wfd.nFileSizeHigh * 0x100000000 + wfd.nFileSizeLow;  // stupid warning C4307 on their own formula
     //sz = fo->sz = wfd.nFileSizeHigh * (MAXDWORD+1) + wfd.nFileSizeLow;
@@ -529,12 +636,12 @@ dirCounts* travel(LPSTR const & path, size_t parentIdx, size_t& LargestFileSz) {
     folderSz += sz; nbFiles++; LargestFileSz = LargestFileSz<sz ? sz : LargestFileSz;
 
   } while(FindNextFileW(hFind, &wfd));
-  if(ERROR_NO_MORE_FILES!=GetLastError()) printErr(catStr({"Error: FindNextFileW(): ",path}), sysErr, 53);
+  if(ERROR_NO_MORE_FILES!=GetLastError()) printErr(catStr({"Error: FindNextFileW(): ",wide2uf8(wpath)}), sysErr, 53);
   FindClose(hFind);
 
-  dirCounts *d;
-  for(auto dir : dirs) { 
-    d = travel(dir.get(),folderIdx,LargestFileSz);
+  dirCounts *d; size_t i = 0;
+  for(auto wdir : wdirs) { 
+    d = travel(wdir.get(), dirs[i++].get(),folderIdx,LargestFileSz);
     folderSz += d->sz; nbFiles += d->nbFiles; delete[] d;    
   }
 
@@ -544,7 +651,7 @@ dirCounts* travel(LPSTR const & path, size_t parentIdx, size_t& LargestFileSz) {
 }
 
 DWORD WINAPI processFiles(LPVOID p) {
-
+  //UINT thId = 0;
   size_t k; bool gotSlot;
 
   while(!stopProcessing) {  // while there are chunks to consume
@@ -552,7 +659,8 @@ DWORD WINAPI processFiles(LPVOID p) {
     Lock();
       for (k = 0; k < nbChunks; k++)
         if (!slots[k]){ slots[k] = gotSlot = true; break; }  // slot/chunk k is taken now
-      unLock(); 
+      //if (thId == 0) thId = ++thIdx; 
+    unLock(); 
     if (!gotSlot) return 0; // no-mo-chunks
 
     if(chewChunk(k+1)!=0 && !IgnoreErr){ stopProcessing = true; return 1; }
@@ -574,18 +682,17 @@ UINT chewChunk(size_t chunk){
 
 short processFile(size_t fidx) {
   
-  size_t sz = items[fileIndxes[fidx]]->sz;
-  if((szLarger && sz<leastSz) || (szSmaller && sz>mostSz)) return 0;
-  
+  if(items[fileIndxes[fidx]]->skip) return 0;
+
+  size_t sz = items[fileIndxes[fidx]]->sz;  
   LPSTR p; LPCSTR fn = items[fileIndxes[fidx]]->path;
-  LPWSTR pw;
 
   XXHash64 xxhash(0); CRC32 dCrc32; MD5 dMd5; SHA1 dSha1; SHA256 dSha2;       
   Keccak dKeccak(Keccak::Keccak256); SHA3 dSha3(SHA3::Bits256);
   
   char *buffer; chkAlloc(BufferSize, buffer); 
   
-  auto f = CreateFileW(pw=uf8toWide(fn), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL); free(pw);
+  auto f = CreateFileW(items[fileIndxes[fidx]]->wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
   if(f==INVALID_HANDLE_VALUE){ printErr(p=catStr({"  Error opening file: ",fn,"\n"}),sysErr,0); free(p); 
     if(!IgnoreErr) stopProcessing=true; return 1; }
   
@@ -612,15 +719,14 @@ short processFile(size_t fidx) {
     if(slash!=nullptr) memmove(fname,slash+1,strlen(fname));
     else if(bslash!=nullptr) memmove(fname,bslash+1,strlen(fname));
   }
-  fname = catStr({" ",fname}); free(tmp);
   #define P std::make_pair<string,size_t>
-  if(computeCrc32)  fprHashLine(buffer, crcN,    sz, P(dCrc32.getHash(),0),  fname, c);
-  if(computeXX)     fprHashLine(buffer, xxN,     sz, P("",xxhash.hash()),    fname, c);
-  if(computeMd5)    fprHashLine(buffer, md5N,    sz, P(dMd5.getHash(),0),    fname, c);
-  if(computeSha1)   fprHashLine(buffer, sha1N,   sz, P(dSha1.getHash(),0),   fname, c);
-  if(computeSha2)   fprHashLine(buffer, sha2N,   sz, P(dSha2.getHash(),0),   fname, c);
-  if(computeSha3)   fprHashLine(buffer, sha3N,   sz, P(dSha3.getHash(),0),   fname, c);
-  if(computeKeccak) fprHashLine(buffer, KeccakN, sz, P(dKeccak.getHash(),0), fname, c);
+  if(computeCrc32)  fprHashLine(buffer, crcN,    humanReadableSz? fidx:sz, P(dCrc32.getHash(),0),  fname, c);
+  if(computeXX)     fprHashLine(buffer, xxN,     humanReadableSz? fidx:sz, P("",xxhash.hash()),    fname, c);
+  if(computeMd5)    fprHashLine(buffer, md5N,    humanReadableSz? fidx:sz, P(dMd5.getHash(),0),    fname, c);
+  if(computeSha1)   fprHashLine(buffer, sha1N,   humanReadableSz? fidx:sz, P(dSha1.getHash(),0),   fname, c);
+  if(computeSha2)   fprHashLine(buffer, sha2N,   humanReadableSz? fidx:sz, P(dSha2.getHash(),0),   fname, c);
+  if(computeSha3)   fprHashLine(buffer, sha3N,   humanReadableSz? fidx:sz, P(dSha3.getHash(),0),   fname, c);
+  if(computeKeccak) fprHashLine(buffer, KeccakN, humanReadableSz? fidx:sz, P(dKeccak.getHash(),0), fname, c);
   #undef P
   free(fname);
 
@@ -630,7 +736,7 @@ short processFile(size_t fidx) {
   return 0;
 }
 
-inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSz, 
+inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSzIdx, 
      const std::pair<string,size_t>& P, const LPCSTR fn, short& c)
  {
   LPCSTR hash = P.first.c_str(); size_t nHash = P.second;
@@ -638,19 +744,23 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSz,
   bool prWord = 0;
   
   if(algoPrefix){ 
-    if(pretty){ chkRealloc(p, hashNameW + 2); sprintf(p, "%*.*s ", hashNameW,hashNameW,algo.c_str()); }
+    if(pretty){ chkRealloc(p, (size_t)hashNameW + 2); sprintf(p, "%-*.*s ", hashNameW,hashNameW,algo.c_str()); }
     else{ chkRealloc(p, algo.size() + 2);     sprintf(p, "%s ",                        algo.c_str()); }
     s = buffer; buffer = catStr({buffer, c>0? "\n":"", p}); free(s); prWord = true;
   }
-  if(sizePrefix){ chkRealloc(p, szWidth + 2);
-    if(pretty) sprintf(p, "%*zu ", szWidth,fSz); else sprintf(p, "%zu ", fSz);
+  if(sizePrefix){ chkRealloc(p, (size_t)szWidth + 2);
+    if(humanReadableSz){
+      if(pretty) sprintf(p, "%-*.*s ", szWidth,szWidth,items[fileIndxes[fSzIdx]]->hsz); 
+      else       sprintf(p, "%s ",                     items[fileIndxes[fSzIdx]]->hsz);
+    }
+    else{ if(pretty) sprintf(p, "%*zu ", szWidth,fSzIdx); else sprintf(p, "%zu ", fSzIdx); }
     s = buffer; buffer = catStr({buffer, (!prWord && c>0)? "\n":"", p}); free(s); prWord = true;
   }
-  chkRealloc(p, hashW + 1 + strlen(fn) + 1);
+  chkRealloc(p, (size_t)hashW + 1 + strlen(fn) + 1);
   if(nHash){ 
     if(lowerCase){ 
       if(pretty) sprintf(p, "%-*Ix %s", hashW,nHash, fn);
-      else       sprintf(p, "%Ix %s",        nHash, fn);
+      else       sprintf(p, "%Ix %s",         nHash, fn);
     }
     else{
       if(pretty) sprintf(p, "%-*IX %s", hashW,nHash, fn);
@@ -665,14 +775,14 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSz,
   free(p); 
 }
 
-short process1File(LPCSTR fn) {
+short process1File(LPCSTR fn, LPWSTR wfn) {
   
   size_t fSz = 0; 
   LARGE_INTEGER fileSize;
   DWORD nBytesRead = 0;
-  LPWSTR pw; LPSTR p;
+  LPSTR p;
   
-  auto f = CreateFileW(pw=uf8toWide(fn), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL); free(pw);
+  auto f = CreateFileW(wfn, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
   if(f==INVALID_HANDLE_VALUE){ printErr(p=catStr({"  Error opening file: ",fn,"\n"}),sysErr,0); free(p); return 1; }
   
   if(!GetFileSizeEx(f, &fileSize)){ printErr(catStr({"  Error: could not determine file size: ",fn,"\n"}),sysErr,0); return 1; }
@@ -680,9 +790,9 @@ short process1File(LPCSTR fn) {
   if((szLarger && fSz<leastSz) || (szSmaller && fSz>mostSz)) return 0;
   
   XXHash64 xxhash(0); CRC32 dCrc32; MD5 dMd5; SHA1 dSha1; SHA256 dSha2;       
-  Keccak dKeccak(Keccak::Keccak256); SHA3 dSha3(SHA3::Bits256);
+  Keccak dKeccak(Keccak::Keccak256); SHA3 dSha3  (SHA3::Bits256);
 
-  char* buffer; chkAlloc(BufferSize,buffer);
+  char* buffer; chkAlloc(BufferSize,buffer); short c = 0;
   while (ReadFile(f, buffer, (DWORD) BufferSize, &nBytesRead, nullptr) && nBytesRead){
     //fSz += nBytesRead;
     if (computeCrc32)  dCrc32 .add(buffer, nBytesRead);
@@ -708,17 +818,17 @@ short process1File(LPCSTR fn) {
   }
   fname = catStr({" ",fname}); free(tmp);
   #define P std::make_pair<string,size_t>
-  if(computeCrc32)  prHashLine(crcN,    fszW,fSz, P(dCrc32.getHash(),0),  fname);
-  if(computeXX)     prHashLine(xxN,     fszW,fSz, P("",xxhash.hash()),    fname);
-  if(computeMd5)    prHashLine(md5N,    fszW,fSz, P(dMd5.getHash(),0),    fname);
-  if(computeSha1)   prHashLine(sha1N,   fszW,fSz, P(dSha1.getHash(),0),   fname);
-  if(computeSha2)   prHashLine(sha2N,   fszW,fSz, P(dSha2.getHash(),0),   fname);
-  if(computeSha3)   prHashLine(sha3N,   fszW,fSz, P(dSha3.getHash(),0),   fname);
-  if(computeKeccak) prHashLine(KeccakN, fszW,fSz, P(dKeccak.getHash(),0), fname);
+  if(computeCrc32)  { prHashLine(crcN,    fszW,fSz, P(dCrc32.getHash(),0),  fname); c++; }
+  if(computeXX)     { prHashLine(xxN,     fszW,fSz, P("",xxhash.hash()),    fname); c++; }
+  if(computeMd5)    { prHashLine(md5N,    fszW,fSz, P(dMd5.getHash(),0),    fname); c++; }
+  if(computeSha1)   { prHashLine(sha1N,   fszW,fSz, P(dSha1.getHash(),0),   fname); c++; }
+  if(computeSha2)   { prHashLine(sha2N,   fszW,fSz, P(dSha2.getHash(),0),   fname); c++; }
+  if(computeSha3)   { prHashLine(sha3N,   fszW,fSz, P(dSha3.getHash(),0),   fname); c++; }
+  if(computeKeccak) { prHashLine(KeccakN, fszW,fSz, P(dKeccak.getHash(),0), fname); c++; }
   #undef P
   free(fname);
 
-  hashedCnt++; totalSzHashed += fSz;
+  hashedCnt++; totalSzHashed += c*fSz;
   return 0;
 }
 
@@ -726,12 +836,15 @@ inline void prHashLine(const string& algo, const short fszW, const size_t fSz, c
  
   LPCSTR hash = p.first.c_str(); size_t nHash = p.second;
   
-       if( pretty &&  algoPrefix){ if(sizePrefix)  flushOut("%-*.*s %*zu ", hashNameW,hashNameW,algo.c_str(), fszW, fSz);
-                                   else            flushOut("%-*.*s ",      hashNameW,hashNameW,algo.c_str()); }
-  else if(!pretty &&  algoPrefix){ if(sizePrefix)  flushOut("%s %*zu ", algo.c_str(), fszW, fSz);
-                                   else            flushOut("%-*.*s ",  algo.c_str()); }
-  else if( pretty && !algoPrefix){ if(sizePrefix)  flushOut("%*zu ", fszW, fSz); }
-  else if(!pretty && !algoPrefix){ if(sizePrefix)  flushOut("%zu ",        fSz); }
+  if(pretty && algoPrefix){ if(sizePrefix){ 
+                              if(humanReadableSz) flushOut("%-*.*s %s ",  hashNameW,hashNameW,algo.c_str(), humanSize(fSz));
+                              else                flushOut("%-*.*s %zu ", hashNameW,hashNameW,algo.c_str(), fSz); }
+                            else                  flushOut("%-*.*s ",     hashNameW,hashNameW,algo.c_str()); }
+  else if(algoPrefix){ if(sizePrefix){ 
+                         if(humanReadableSz) flushOut("%s %zu ", algo.c_str(), humanSize(fSz));
+                         else                flushOut("%s %zu ", algo.c_str(), fSz); }
+                       else                  flushOut("%s ",     algo.c_str()); }
+  else if(sizePrefix) if(humanReadableSz) flushOut("%s ", humanSize(fSz)); else flushOut("%zu ", fSz);
   
   if(nHash){ 
     if(lowerCase){ 
@@ -746,7 +859,7 @@ inline void prHashLine(const string& algo, const short fszW, const size_t fSz, c
     }
     return;
   } 
-  
+
   if(pretty&&noFname) flushOut("%s\n",                   lowerCase? hash:toupper(p.first));
   else if(pretty)     flushOut("%-*.*s%s\n", hashW,hashW,lowerCase? hash:toupper(p.first), noFname? "":fn);
   else                flushOut("%s%s\n",                 lowerCase? hash:toupper(p.first), noFname? "":fn);
@@ -794,13 +907,13 @@ inline void formatDur(__int64 dur) {
   if(h>0){ snprintfA(sh, n, "%d hour", 2);   cnt++; }; if (h != 1)  strcat(sh, "s");
   if(m>0){ snprintfA(sm, n, "%d minute", m); cnt++; }; if (m != 1)  strcat(sm, "s");
   if(s>0){ snprintfA(ss, n, " second");    cnt++; }; if (ms>0 || s!=1) strcat(ss, "s");
-  if(cnt==0){ flushErr("%d millisecond", ms); if (ms != 1) flushErr("s\n"); else flushErr("\n"); return; }
+  if(cnt==0){ flushErr("%d millisecond", ms); if (ms != 1) flushErr("s.\n"); else flushErr(".\n"); return; }
   //if(d>0){ cnt--; flushErr("%s", sd); if (cnt > 0) flushErr(" and "); else flushErr(", "); }
   if(h>0){ cnt--; flushErr("%s", sh); if (cnt==0) flushErr(" and "); else flushErr(", "); }
   if(m>0){ cnt--; flushErr("%s", sm); if (cnt==0) flushErr(" and "); else flushErr(", "); }
   if(s>0){ flushErr("%lu.%03d", s, ms); flushErr("%s", ss); }
   else{ flushErr("%d millisecond", ms); if (ms != 1) flushErr("s"); }
-  flushErr("\n");
+  flushErr(".\n");
 }
 
 inline wchar_t* uf8toWide(LPCCH str) {
@@ -834,14 +947,12 @@ inline char* wide2uf8(LPCWSTR str) {
   return pText;
 }
 
-
 inline void flushErr(LPCSTR format, ...) {
   va_list args;
   va_start(args, format);
   vfprintf(stderr, format, args); fflush(stderr);
   va_end(args);
 }
-
 inline void flushOut(LPCSTR format, ...) {
   va_list args;
   va_start(args, format);
@@ -859,7 +970,7 @@ inline void printErr(LPCSTR msg, LONG errCode, int exitCode) {
       LPSTR u8str = wide2uf8(messageBuffer); 
       size_t n = strlen(u8str) - 1; while(u8str[n]=='\n') u8str[(n--)] = 0;  // thank you
       flushErr("  (Err %d) %s\n\n", errCode, u8str); 
-      LocalFree(messageBuffer); delete[] u8str;
+      LocalFree(messageBuffer); delete[] u8str; //free((void *)u8str);
     }
     if(exitCode!=0) exit(exitCode);
     return;
@@ -879,7 +990,7 @@ inline void checkSnprintfA(HRESULT hRslt, size_t sz) {
 }
 
 inline void strCopy(LPSTR dst, size_t sz, LPCSTR src, bool truncate) {
-  if(dst==0) printErr("Error: strCopy(): destination size cannot be zero\n", 0, 15);
+  if(dst==nullptr) printErr("Error: strCopy(): destination cannot be null\n", 0, 15);
   auto hRslt = StringCchCopyA(dst, sz, src);
   if(hRslt==STRSAFE_E_INVALID_PARAMETER) {
     flushErr("\n  Error: StringCchCopyA() failed: destination size cannot be larger than %ld\n", STRSAFE_MAX_CCH);
@@ -888,14 +999,22 @@ inline void strCopy(LPSTR dst, size_t sz, LPCSTR src, bool truncate) {
     printErr("Error: StringCchCopyA() failed: insufficient buffer\n", 0, 17);
 }
 
+inline void wstrCopy(LPWSTR dst, size_t sz, LPWSTR src, bool truncate) {
+  if(dst==nullptr) printErr("Error: wstrCopy(): destination cannot be null\n", 0, 15);
+  auto hRslt = StringCchCopyW(dst, sz, src);
+  if(hRslt==STRSAFE_E_INVALID_PARAMETER) {
+    flushErr("\n  Error: StringCchCopyW() failed: destination size cannot be larger than %ld\n", STRSAFE_MAX_CCH);
+    printErr(nullptr, 0, 16);
+  } else if(!truncate && hRslt==STRSAFE_E_INSUFFICIENT_BUFFER)
+    printErr("Error: StringCchCopyW() failed: insufficient buffer\n", 0, 17);
+}
 
 inline LPSTR catStr(std::initializer_list<LPCSTR> list){
   size_t sz = 0; 
   HRESULT hRslt = S_OK;
   LPSTR buff; chkAlloc(1,buff); buff[0] = '\0';
   for (auto x : list){
-    sz = 1 + strlen(x) + strlen(buff);
-    chkRealloc(buff, sz);
+    chkRealloc(buff, sz = 1 + strlen(x) + strlen(buff));
     hRslt = StringCchCatA(buff, sz, x);
     if(FAILED(hRslt)) {
       fprintf(stderr, "Error: catStr(): StringCchCatA() failed: ");
