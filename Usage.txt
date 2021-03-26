@@ -1,4 +1,6 @@
 
+Usage:
+
   folderHash [algos] [opts] file/folder
   folderHash -h / --help : print this message
 
@@ -18,6 +20,12 @@ Available options:  [on] means the option is on by default
    To force an on/off option, use: -opt 0 / -opt 1
    Example: '-sd 0' will disable showing total run time
 
+Exampel output, with relevant options per field :
+
+  -g   -ss -hs   -u                                -nf -sl -sb -su -pa -sc 
+  MD5  29396107 751CA058BB1EDE3A14B67A9B001A0916  T:/tmp/Documents/Andrew/Invoice_2021.04.04.pdf
+  -md5 -l -m                                -f                                               -fb
+  
  * Display info
    -q,  --quiet, --silent : disable all info display, overrides other options
    -st, --stats    : show file/thread count info
@@ -27,11 +35,13 @@ Available options:  [on] means the option is on by default
  * Output formatting
    -u,  --uppercase  : use uppercase for hashes
    -ss, --size       : [on] prefix each line of output with file size
+   -hs, --human-size : show human-readable files sizes, not byte counts
    -g : prefix each line of output with hash algorithm name
         This is on by default if multiple algos are to be used
    -f,  --pretty     : [on] show formatted output (aligned columns)
    -fb, --file-block : add an empty line after each file
        This is on by default if multiple algos are to be used
+   -ld, --list-dirs  : in folder mode, print each folder before its files
 
    File names/paths
    -nf, --no-fname   : do not show file path/name, only the hash (file mode)
@@ -40,13 +50,20 @@ Available options:  [on] means the option is on by default
    -sb, --basename : show file names, not full paths (overridden by -nf)
    -su, --unix-path: show Unix-style paths (forward slash '/' separator)
        Overrides -sl
+   -pa, --path-asis: show provided path as it is, do not clean it up
+       This applies to provided path ; for subfolders, -sl & -su still apply
 
  * Filtering options
+   -n, --at-most N  : stop after listing N files
+   -s, --sys-files  : include system files/folders (not recommended)
+   -h, --no-hidden  : exclude hidden files
    -l, --smaller N  : process a file only if: size <= N bytes
    -m, --larger N   : process a file only if: size >= N bytes
        Nk/M/G: in kilo/mega/giga-bytes, ex: 23M = 23 x 1024 x 1024 bytes
 
  * Operation
+   -t N, --threads N : use N parallel threads at most. This will be reduced
+       to the number of logical processors on your system if needed
    -k, --keep-going       : [on] do not stop on error
 
   Last occurence of a repeated option overrides previous ones.
