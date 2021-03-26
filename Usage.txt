@@ -20,7 +20,7 @@ Available options:  [on] means the option is on by default
    To force an on/off option, use: -opt 0 / -opt 1
    Example: '-sd 0' will disable showing total run time
 
-Exampel output, with relevant options per field :
+Example output, with relevant options per field :
 
   -g   -ss -hs   -u                                -nf -sl -sb -su -pa -sc 
   MD5  29396107 751CA058BB1EDE3A14B67A9B001A0916  T:/tmp/Documents/Andrew/Invoice_2021.04.04.pdf
