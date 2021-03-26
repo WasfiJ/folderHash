@@ -22,7 +22,7 @@ Available options:  [on] means the option is on by default
 
 Example output, with relevant options per field :
 
-  -g   -ss -hs   -u                                -nf -sl -sb -su -pa -sc 
+  -g   -ss -hs   -u                                -nf -sl -sb -su -pa
   MD5  29396107 751CA058BB1EDE3A14B67A9B001A0916  T:/tmp/Documents/Andrew/Invoice_2021.04.04.pdf
   -md5 -l -m                                -f                                               -fb
   
