@@ -1,7 +1,7 @@
 # folderHash
 Compute hashes for all files in a folder tree (Windows 7+).
 
-This is a Windows versatile multithreaded command-line interface to the portable Hashing Library by Stephan Brumme (all rights reserved).
+This is a versatile Windows multithreaded command-line interface to the portable Hashing Library by Stephan Brumme (all rights reserved).
 https://create.stephan-brumme.com/hash-library/
 
 Supported algorithms : XX, CRC32, MD5, SHA1/2/3, Keccak
