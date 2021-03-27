@@ -59,7 +59,7 @@ const size_t BufferSize = 144*7*4;
 DWORD WINAPI processFiles(LPVOID p);
 LPSTR* outT;
 short processFile(size_t idx);
-short process1File(LPCSTR fn, LPWSTR wfn);
+short process1File(LPSTR fn, LPCWSTR wfn);
 std::atomic<bool> stopProcessing(false);
 
 size_t nbChunks, chunkSz, thMax = 2;
@@ -139,20 +139,21 @@ inline short str2Sz(string& s, size_t& nbr){
 
 char * humanSize(size_t bytes){
   
+  char *output; chkAlloc(32,output);
+  if(bytes < 1024){ sprintf(output, "%zu bytes", bytes); return output; }
+  
   char *suffix[] = {"bytes", "KB", "MB", "GB", "TB"};
   char length = sizeof(suffix) / sizeof(suffix[0]);
 
   int i = 0;
   double dblBytes = (double) bytes;
 
-  if(bytes > 1024) { 
+  if(bytes >= 1024) { 
     for (i = 0; (bytes / 1024) > 0 && i<length-1; i++, bytes /= 1024)
       dblBytes = bytes / 1024.0;
   }
-
-  char *output; chkAlloc(32,output);
-  if(bytes <= 1024) sprintf(output, "%zu bytes", bytes);
-  else sprintf(output, "%zu %s", bytes, suffix[i]);
+  
+  sprintf(output, "%.02lf %s", dblBytes, suffix[i]);
   return output;
 }
 
@@ -478,7 +479,7 @@ int main(int argc, char** argv) {
     process1File(path,fpath); 
     long long dur = DURµs( CLK::now() - start).count();
     if(showStats){ flushErr("\nHashed %zu bytes",totalSzHashed);
-      if(totalSzHashed>1024) flushErr(" (%s), average data rate: %s/s\n", 
+    if(totalSzHashed>=1024) flushErr(" (%s), average data rate: %s/s\n", 
         humanSize(totalSzHashed), humanSize(1000000*totalSzHashed/dur));
       else flushErr("\n"); }
     if(showDur) formatDur(dur); return 0; 
@@ -745,7 +746,7 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSzIdx,
   
   if(algoPrefix){ 
     if(pretty){ chkRealloc(p, (size_t)hashNameW + 2); sprintf(p, "%-*.*s ", hashNameW,hashNameW,algo.c_str()); }
-    else{ chkRealloc(p, algo.size() + 2);     sprintf(p, "%s ",                        algo.c_str()); }
+    else{ chkRealloc(p, algo.size() + 2);             sprintf(p, "%s ",                         algo.c_str()); }
     s = buffer; buffer = catStr({buffer, c>0? "\n":"", p}); free(s); prWord = true;
   }
   if(sizePrefix){ chkRealloc(p, (size_t)szWidth + 2);
@@ -775,7 +776,7 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSzIdx,
   free(p); 
 }
 
-short process1File(LPCSTR fn, LPWSTR wfn) {
+short process1File(LPSTR fn, LPCWSTR wfn) {
   
   size_t fSz = 0; 
   LARGE_INTEGER fileSize;
@@ -808,25 +809,25 @@ short process1File(LPCSTR fn, LPWSTR wfn) {
 
   delete[] buffer;
   
+  if( 1 == ((short)(computeCrc32?1:0) + (short)(computeMd5?1:0) + (short)(computeSha1?1:0) + (short)(computeSha2?1:0)
+    + (short)(computeXX?1:0) + (short)(computeKeccak?1:0) + (short)(computeSha3?1:0))) pretty = false;
+  
   short fszW = (short) std::to_string(fSz).length();
 
   // show results
-  LPSTR tmp, fname = catStr({fn}); tmp = fname;
-  if(!noFname && baseNames){ char *slash = strrchr(fname,'/'), *bslash = strrchr(fname,'\\');
-    if(slash!=nullptr) memmove(fname,slash+1,strlen(fname));
-    else if(bslash!=nullptr) memmove(fname,bslash+1,strlen(fname));
+  if(!noFname && baseNames){ char *slash = strrchr(fn,'/'), *bslash = strrchr(fn,'\\');
+    if(slash!=nullptr) memmove(fn,slash+1,strlen(fn));
+    else if(bslash!=nullptr) memmove(fn,bslash+1,strlen(fn));
   }
-  fname = catStr({" ",fname}); free(tmp);
   #define P std::make_pair<string,size_t>
-  if(computeCrc32)  { prHashLine(crcN,    fszW,fSz, P(dCrc32.getHash(),0),  fname); c++; }
-  if(computeXX)     { prHashLine(xxN,     fszW,fSz, P("",xxhash.hash()),    fname); c++; }
-  if(computeMd5)    { prHashLine(md5N,    fszW,fSz, P(dMd5.getHash(),0),    fname); c++; }
-  if(computeSha1)   { prHashLine(sha1N,   fszW,fSz, P(dSha1.getHash(),0),   fname); c++; }
-  if(computeSha2)   { prHashLine(sha2N,   fszW,fSz, P(dSha2.getHash(),0),   fname); c++; }
-  if(computeSha3)   { prHashLine(sha3N,   fszW,fSz, P(dSha3.getHash(),0),   fname); c++; }
-  if(computeKeccak) { prHashLine(KeccakN, fszW,fSz, P(dKeccak.getHash(),0), fname); c++; }
+  if(computeCrc32)  { prHashLine(crcN,    fszW,fSz, P(dCrc32.getHash(),0),  fn); c++; }
+  if(computeXX)     { prHashLine(xxN,     fszW,fSz, P("",xxhash.hash()),    fn); c++; }
+  if(computeMd5)    { prHashLine(md5N,    fszW,fSz, P(dMd5.getHash(),0),    fn); c++; }
+  if(computeSha1)   { prHashLine(sha1N,   fszW,fSz, P(dSha1.getHash(),0),   fn); c++; }
+  if(computeSha2)   { prHashLine(sha2N,   fszW,fSz, P(dSha2.getHash(),0),   fn); c++; }
+  if(computeSha3)   { prHashLine(sha3N,   fszW,fSz, P(dSha3.getHash(),0),   fn); c++; }
+  if(computeKeccak) { prHashLine(KeccakN, fszW,fSz, P(dKeccak.getHash(),0), fn); c++; }
   #undef P
-  free(fname);
 
   hashedCnt++; totalSzHashed += c*fSz;
   return 0;
@@ -849,20 +850,20 @@ inline void prHashLine(const string& algo, const short fszW, const size_t fSz, c
   if(nHash){ 
     if(lowerCase){ 
       if(pretty&&noFname) flushOut("%Ix\n",           nHash);
-      else if(pretty)     flushOut("%-*Ix%s\n", hashW,nHash, fn);
-      else                flushOut("%Ix%s\n",         nHash, noFname? "":fn); 
+      else if(pretty)     flushOut("%-*Ix %s\n", hashW,nHash, noFname? "":fn);
+      else                flushOut("%Ix %s\n",         nHash, noFname? "":fn); 
     }
     else{ 
-      if(pretty&&noFname) flushOut("%IX\n",           nHash);
-      else if(pretty)     flushOut("%-*IX%s\n", hashW,nHash, fn);
-      else                flushOut("%IX%s\n",         nHash, noFname? "":fn); 
+      if(noFname)         flushOut("%IX\n",            nHash);
+      else if(pretty)     flushOut("%-*IX %s\n", hashW,nHash, fn);
+      else                flushOut("%IX %s\n",         nHash, fn); 
     }
     return;
   } 
 
-  if(pretty&&noFname) flushOut("%s\n",                   lowerCase? hash:toupper(p.first));
-  else if(pretty)     flushOut("%-*.*s%s\n", hashW,hashW,lowerCase? hash:toupper(p.first), noFname? "":fn);
-  else                flushOut("%s%s\n",                 lowerCase? hash:toupper(p.first), noFname? "":fn);
+  if(noFname)         flushOut("%s\n",                    lowerCase? hash:toupper(p.first));
+  else if(pretty)     flushOut("%-*.*s %s\n", hashW,hashW,lowerCase? hash:toupper(p.first), fn);
+  else                flushOut("%s %s\n",                 lowerCase? hash:toupper(p.first), fn);
   
 }
 
@@ -925,7 +926,7 @@ inline wchar_t* uf8toWide(LPCCH str) {
   if(0==MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, pText, dwCount))
     printErr("Error: uf8toWide(): MultiByteToWideChar() failed\n", sysErr, 55);
   return pText;
-}
+} 
 
 inline char* wide2uf8(LPCWSTR str) {
   auto dwCount = WideCharToMultiByte(CP_UTF8, 0, str, -1, nullptr, 0, nullptr, nullptr);
@@ -933,17 +934,8 @@ inline char* wide2uf8(LPCWSTR str) {
   fprintf(stderr, "Error: wide2uf8(): WideCharToMultiByte() failed.\n"); fflush(stderr); 
   printErr(nullptr, 10000+errorID, 57); }
   char *pText = nullptr; chkAlloc(dwCount, pText);
-  if(0==WideCharToMultiByte(CP_UTF8, 0, str, -1, pText, dwCount, nullptr, nullptr)) {  DWORD errorMessageID = GetLastError();
-  fprintf(stderr, "Error: wide2uf8(): WideCharToMultiByte() failed\n"); fflush(stderr);
-  LPSTR messageBuffer = nullptr;
-  size_t size = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-    nullptr,
-    errorMessageID,
-    MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-    (LPSTR)&messageBuffer, 0, nullptr);
-  if(size>0){ fprintf(stderr, "(Err %lu) %s\n", errorMessageID, messageBuffer); fflush(stderr); }
-  exit(58);
-  }
+  if(0==WideCharToMultiByte(CP_UTF8, 0, str, -1, pText, dwCount, nullptr, nullptr))
+    printErr("Error: uf8toWide(): WideCharToMultiByte() failed\n", sysErr, 58);
   return pText;
 }
 
