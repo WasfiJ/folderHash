@@ -22,9 +22,9 @@ Available options:  [on] means the option is on by default
 
 Example output, with relevant options per field :
 
-  -g   -ss -hs   -u                                -nf -sl -sb -su -pa
-  MD5  29396107 751CA058BB1EDE3A14B67A9B001A0916  T:/tmp/Documents/Andrew/Invoice_2021.04.04.pdf
-  -md5 -l -m                                -f                                               -fb
+  -g   -ss -hs   -u                               -tg -nf -sl -sb -su -pa
+  MD5  29396107 751CA058BB1EDE3A14B67A9B001A0916  T:/Documents/Invoice_2021.04.04.pdf
+  -md5 -l -m                                -f                                    -fb
   
  * Display info
    -q,  --quiet, --silent : disable all info display, overrides other options
@@ -46,7 +46,7 @@ Example output, with relevant options per field :
    File names/paths
    -nf, --no-fname : do not show file path/name, only the hash (file mode)
    -sl, --my-slash : use my style (/ or \) for paths. The first encountered
-       forward or backward slash in provided file/folder name will be used.
+       forward or backword slash in provided file/folder name will be used.
    -sb, --basename : show file names, not full paths (overridden by -nf)
    -su, --unix-path: show Unix-style paths (forward slash '/' separator)
        Overrides -sl
@@ -56,7 +56,8 @@ Example output, with relevant options per field :
  * Filtering options
    -n, --at-most N  : stop after listing N files
    -s, --sys-files  : include system files/folders (not recommended)
-   -h, --no-hidden  : exclude hidden files
+   -tg, --tag-hidden: prefix hidden/system files' paths/names with a '*'
+   -nh, --no-hidden : exclude hidden files/folders
    -l, --smaller N  : process a file only if: size <= N bytes
    -m, --larger N   : process a file only if: size >= N bytes
        Nk/M/G: in kilo/mega/giga-bytes, ex: 23M = 23 x 1024 x 1024 bytes
@@ -67,3 +68,4 @@ Example output, with relevant options per field :
    -k, --keep-going       : [on] do not stop on error
 
   Last occurence of a repeated option overrides previous ones.
+
