@@ -375,8 +375,6 @@ int main(int argc, char** argv) {
       if((i+1)<argc) onOffarg(string(argv[i+1]),baseNames,i,lastOptI); continue; }
     if(opt=="-su"||opt=="--unix-path"){ unixPath = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),unixPath,i,lastOptI); continue; }
-    if(opt=="-su"||opt=="--unix-path"){ unixPath = true; lastOptI = i;
-      if((i+1)<argc) onOffarg(string(argv[i+1]),unixPath,i,lastOptI); continue; }
     if(opt=="-pa"||opt=="--path-asis"){ pathAsis = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),pathAsis,i,lastOptI); continue; }
     if(opt=="-sc"||opt=="--cyg-path"){ cygPath = true; lastOptI = i;
