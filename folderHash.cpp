@@ -59,7 +59,7 @@ const size_t BufferSize = 144*7*4;
 DWORD WINAPI processFiles(LPVOID p);
 LPSTR* outT;
 short processFile(size_t idx);
-short process1File(LPSTR fn, LPCWSTR wfn);
+short process1File(LPSTR fn, LPCWSTR wfn, DWORD attr);
 std::atomic<bool> stopProcessing(false);
 
 size_t nbChunks, chunkSz, thMax = 2;
@@ -72,6 +72,7 @@ UINT chewChunk(size_t chunk);
 #define Lock() if (fileCnt>0 && WAIT_FAILED == WaitForSingleObject(hMutex, INFINITE)) {\
   printErr("Error: system failure (wait).", sysErr); return 60; }
 #define unLock() if(fileCnt>0 && 0 == ReleaseMutex(hMutex)) { printErr("Error: system failure (release).", sysErr); return 62; }
+#define sync(A) { Lock(); A; unLock(); }
 
 inline void flushErr(LPCSTR format, ...);
 inline void flushOut(LPCSTR format, ...);
@@ -84,16 +85,16 @@ inline void  strCopy(LPSTR dst,  size_t sz, LPCSTR src, bool truncate=false);
 inline void wstrCopy(LPWSTR dst, size_t sz, LPWSTR src, bool truncate=false);
 inline void checkSnprintfA(HRESULT,size_t);
 #define snprintfA(dst,sz,fmt,...) checkSnprintfA(StringCchPrintfA(dst,sz,fmt, ##__VA_ARGS__),sz)
-inline void formatDur(__int64 dur);
+inline void formatDur(__int64 dur, bool done = true);
 template <typename T> void chkRealloc(T*& x, size_t count);
 size_t folderIdx = 0, fileCnt = 0, hashedCnt = 0, totalSzHashed = 0, emptyDirsCnt = 0;
 vector<size_t> fileIndxes;
-struct dirCounts { size_t sz, nbFiles; };
+struct dirCounts { size_t sz = 0, nbFiles = 0, nHidden = 0, nSys = 0; };
 struct fsObj {
   LPSTR path, hsz = nullptr; 
   LPWSTR wpath;
-  size_t sz, idx, parent, nbFiles; 
-  bool isdir, skip = false;
+  size_t sz, idx, parent, nbFiles, nHidden, nSys; 
+  bool isdir = false, skip = false, hidden = false, system = false ;
 };
 vector<fsObj*> items;
 size_t idx = -1;
@@ -163,11 +164,11 @@ bool showStats = false, showDur = false, listEmptyDirs = false, lowerCase = true
 bool algoPrefix = false, pretty = true, userSlash = false, baseNames = false, pathAsis = false, unixPath = false, cygPath = false;
 bool noHidden = false, incPattrn = false, excPattern = false, szSmaller = false, szLarger = false, newerThan = false, olderThan = false;
 bool cmpTime = false, userThreadCnt = false, IgnoreErr = true, delEmptyDirs = false, delEmptyFiles = false, delEmptyBoth = false;
-bool listDirs = false, sysFiles = false, humanReadableSz = false;
+bool listDirs = false, sysFiles = false, humanReadableSz = false, tagSysHidden = false;
 
 bool algoPrefixU = false, filesByBlockU = false;
 
-size_t leastSz = 0, mostSz = 0; size_t userThreadCntN = 0, max2List = 0;
+size_t leastSz = 0, mostSz = 0; size_t userThreadCntN = 0, max2List = 0, LargestFileSz2show = 0, nfiles2Show = 0;
 
 void chunkLogic(){
   if(thMax == 1 || fileCnt <= thMax || fileCnt<=minFilesChunk){ chunkSz = fileCnt; nbChunks = thMax = 1; return; }
@@ -236,7 +237,7 @@ void usage(){
     cout << "   -ld, --list-dirs  : in folder mode, print each folder before its files   " << endl << endl;
     
     cout << "   File names/paths                                                         " << endl;
-    cout << "   -nf, --no-fname   : do not show file path/name, only the hash (file mode)" << endl;
+    cout << "   -nf, --no-fname : do not show file path/name, only the hash (file mode)  " << endl;
     cout << "   -sl, --my-slash : use my style (/ or \\) for paths. The first encountered" << endl;
     cout << "       forward or backword slash in provided file/folder name will be used. " << endl;
     cout << "   -sb, --basename : show file names, not full paths (overridden by -nf)    " << endl;
@@ -249,7 +250,8 @@ void usage(){
     cout << " * Filtering options                                                        " << endl;
     cout << "   -n, --at-most N  : stop after listing N files                            " << endl;
     cout << "   -s, --sys-files  : include system files/folders (not recommended)        " << endl;
-    cout << "   -h, --no-hidden  : exclude hidden files                                  " << endl;
+    cout << "   -tg, --tag-hidden: prefix hidden/system files' paths/names with a '*'    " << endl;
+    cout << "   -nh, --no-hidden : exclude hidden files/folders                          " << endl;
   //cout << "   -x pattern       : skip files matching 'pattern' (case insensitive)      " << endl;
   //cout << "      multiple patterns suported: -x *.txt -x \"a dir/\" ('a dir/' or       " << endl;
   //cout << "      'a dir\\') -> all text files and all files under 'a dir' folder       " << endl;
@@ -257,7 +259,7 @@ void usage(){
     cout << "   -l, --smaller N  : process a file only if: size <= N bytes               " << endl;
     cout << "   -m, --larger N   : process a file only if: size >= N bytes               " << endl;
     cout << "       Nk/M/G: in kilo/mega/giga-bytes, ex: 23M = 23 x 1024 x 1024 bytes    " << endl;
-  //cout << "   -n, --newer T    : process a file only if: timestamp >= T                " << endl;
+  //cout << "   -N, --newer T    : process a file only if: timestamp >= T                " << endl;
   //cout << "   -O, --older T    : process a file only if: timestamp <= T                " << endl;
   //cout << "       T is a timestamp of format: 'YYYY.mm.dd HH:MM:SS', example:          " << endl;
   //cout << "       -n \"2021.04.25 18:10:23\" : newer than April 25th 2021, 18:10:23 PM " << endl;
@@ -284,6 +286,35 @@ void noArg(string opt,LPCSTR arg){
 void onOffarg(string& opt, bool& var, short& i, short& lastOptI){
   if(opt=="0"){ var = false; lastOptI = ++i; }
   if(opt=="1"){ var = true;  lastOptI = ++i; }
+}
+
+void listDir(size_t dirIdx, bool *folderDisp){
+  size_t sz = items[dirIdx]->sz, nbFiles = items[dirIdx]->nbFiles;
+  if(nullptr != folderDisp){ 
+    if(folderDisp[dirIdx]) return;
+    folderDisp[dirIdx] = true; 
+    if(!showStats){ flushOut("%s:\n", items[dirIdx]->path); return; }
+    if(humanReadableSz)
+      flushOut("%s: %s, %zu file%s",         items[dirIdx]->path, humanSize(sz),   nbFiles, nbFiles==1?"":"s");
+    else
+      flushOut("%s: %zu byte%s, %zu file%s", items[dirIdx]->path, sz,sz==1?"":"s", nbFiles, nbFiles==1?"":"s");
+  }
+  else flushOut("%s, %zu files", humanSize(sz), nbFiles);
+  size_t nHidden = items[dirIdx]->nHidden, nSys = items[dirIdx]->nSys;
+  //flushOut("h=%zu, s=%zu\n", nHidden, nSys);
+  if(!noHidden && nHidden==0 && sysFiles && nSys==0){ flushOut(" (no hidden/system files)\n"); return; }
+  if(noHidden && !sysFiles){ flushOut("\n"); return; }
+
+  if(!noHidden){ if(nHidden>0)     flushOut(" (%zu hidden", nHidden);
+                 else              flushOut(" (%s hidden", nbFiles==1?"not":"none are"); }
+  if(sysFiles){
+    if(nSys>0) flushOut(", %zu system file%s)\n", nSys, nSys==1?"":"s");
+    else{ 
+      if(!noHidden) flushOut(", no system files)\n");
+      else flushOut(" (no system files)\n");
+    }
+  }
+  else flushOut(")\n"); 
 }
 
 int main(int argc, char** argv) {
@@ -358,7 +389,9 @@ int main(int argc, char** argv) {
       lastOptI = ++i; continue; }
     if(opt=="-s"||opt=="--sys-files"){ sysFiles = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),sysFiles,i,lastOptI); continue; }
-    if(opt=="-h"||opt=="--no-hidden"){ noHidden = true; lastOptI = i;
+      if(opt=="-tg"||opt=="--tag-hidden"){ tagSysHidden = true; lastOptI = i;
+        if((i+1)<argc) onOffarg(string(argv[i+1]),tagSysHidden,i,lastOptI); continue; }
+    if(opt=="-nh"||opt=="--no-hidden"){ noHidden = true; lastOptI = i;
       if((i+1)<argc) onOffarg(string(argv[i+1]),noHidden,i,lastOptI); continue; }
     if(opt=="-x"){ incPattrn = true; continue; }
     if(opt=="-p"){ excPattern = true; continue; }
@@ -372,7 +405,7 @@ int main(int argc, char** argv) {
       if(argv[i+1][0]=='-'){ cerr << "\n Error: expecting a positive number after option '"<<opt<<"'\n"; seekHelp(3); }
       if(0!=str2Sz(string(argv[i+1]), leastSz)) seekHelp(3);
       lastOptI = ++i; continue; }
-    if(opt=="-n"||opt=="--newer"){ newerThan = true; lastOptI = i; continue; }
+    if(opt=="-N"||opt=="--newer"){ newerThan = true; lastOptI = i; continue; }
     if(opt=="-O"||opt=="--older"){ olderThan = true; lastOptI = i; continue; }
     if(opt=="-T"||opt=="--cmp-time"){ cmpTime = true; lastOptI = i; continue; }
     if(opt=="-t"||opt=="--threads"){ userThreadCnt = true; 
@@ -418,14 +451,14 @@ int main(int argc, char** argv) {
   LPSTR path = argv[argc-1];  
 
   LPWSTR fpath;  chkAlloc(32768,fpath);
-  int mUNC = strncmp(path,"\\\\?\\",4);
+  auto m = strncmp(path,"\\\\?\\",4);
   { WCHAR *slash = pathW;
     while(nullptr != (slash = wcsstr(slash, L"/"))) *slash = L'\\';
 
     DWORD plen; LPWSTR tmp = nullptr; HANDLE f;    
     #define OPEN_FILE GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0,                          nullptr
     #define OPEN_DIR  GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr
-    if(mUNC==0) f = (INVALID_HANDLE_VALUE == (f = CreateFileW(pathW, OPEN_DIR))) ? CreateFileW(pathW, OPEN_FILE) : f;
+    if(m==0) f = (INVALID_HANDLE_VALUE == (f = CreateFileW(pathW, OPEN_DIR))) ? CreateFileW(pathW, OPEN_FILE) : f;
     else { tmp = catWstr({ L"\\\\?\\",pathW }); f = CreateFileW(tmp, OPEN_DIR); nfree(tmp); f = (f==INVALID_HANDLE_VALUE) ?
       CreateFileW(tmp = catWstr({ L"\\\\?\\",pathW }), OPEN_FILE) : f; nfree(tmp); }
     if(f==INVALID_HANDLE_VALUE) printErr(catStr({"Error opening: ",path}),sysErr,7);
@@ -438,7 +471,7 @@ int main(int argc, char** argv) {
       if(maxPath<1+plen){ flushErr("\n  Error: path too long: %-100.100s..\n\n", path); return 9; }
     }
     else {
-      if(mUNC==0) plen = GetFullPathNameW(pathW, maxPath*sizeof(WCHAR),fpath,nullptr);
+      if(m==0) plen = GetFullPathNameW(pathW, maxPath*sizeof(WCHAR),fpath,nullptr);
       else{ plen = GetFullPathNameW(tmp = catWstr({L"\\\\?\\",pathW}), maxPath,fpath,nullptr); nfree(tmp); }
       if(0==plen) printErr(catStr({"\n Error: GetFullPathNameW(): ",path}), sysErr, 77);
       if(maxPath<1+plen){ flushErr("\n  Error: path too long: %-100.100s..\n\n", path); return 78; }
@@ -471,12 +504,13 @@ int main(int argc, char** argv) {
     if(!pathAsis && forwardSlash==1) while(nullptr!=(bslash = strstr(bslash,"\\"))) *bslash = '/';
   }
 
-  size_t LargestFileSz = 0;
+  size_t LargestFileSz = 0; 
   if(attr&FILE_ATTRIBUTE_DIRECTORY){
     dirCounts *dummy = travel(fpath, path, -1, LargestFileSz); free(dummy);
+    items[0]->hidden = attr&FILE_ATTRIBUTE_HIDDEN; items[0]->system = attr&FILE_ATTRIBUTE_SYSTEM;
   }
-  else { if(showStats) flushErr("\n");
-    process1File(path,fpath); 
+  else { if(showStats) flushErr("\n"); CLK::time_point lStart = CLK::now();
+    process1File(path,fpath,attr); 
     long long dur = DURµs( CLK::now() - start).count();
     if(showStats){ flushErr("\nHashed %zu bytes",totalSzHashed);
     if(totalSzHashed>=1024) flushErr(" (%s), average data rate: %s/s\n", 
@@ -498,25 +532,13 @@ int main(int argc, char** argv) {
     return 0;
   }
 
-  size_t LargestFileSz2show = 0, j = 0;
-  for(auto i: items){  if(i->isdir) continue;
-    size_t sz = i->sz;
-    if((szLarger && sz<leastSz) || (szSmaller && sz>mostSz)){ i->skip = true; continue; }
-    if((attr = GetFileAttributesW(i->wpath))==INVALID_FILE_ATTRIBUTES){ if(IgnoreErr) printErr(path, sysErr, 0);
-      else printErr(path, sysErr, 23); continue; }
-    if( noHidden && attr&FILE_ATTRIBUTE_HIDDEN){ i->skip = true; continue; }
-    if(!sysFiles && attr&FILE_ATTRIBUTE_SYSTEM){ i->skip = true; continue; }
-    
-    if(max2List>0 && ++j>max2List) break;
-    if(humanReadableSz){ i->hsz = humanSize(sz); short n = (short)strlen(i->hsz); szWidth = szWidth<n ? n:szWidth; }
-    else LargestFileSz2show = LargestFileSz2show<sz ? sz:LargestFileSz2show;
-  }
   if(!humanReadableSz) szWidth = (short) ::to_string(LargestFileSz2show).length();
    
   
   SYSTEM_INFO *sysInfo; chkAlloc(1,sysInfo); GetSystemInfo(&*sysInfo); thMax = sysInfo->dwNumberOfProcessors; free(sysInfo);
   if(userThreadCnt && userThreadCntN<=thMax) thMax = userThreadCntN;
   if(thMax<2 && userThreadCntN!=1) thMax = 2;
+  if(max2List>0) fileCnt = max2List;
   chunkLogic();
   if(showStats){ flushErr("\n#Files = %lu\n", fileCnt);
     if(thMax>1) flushErr("  Processing files by packs of %zu (%zu packs)\n  Using %zu workers\n", chunkSz, nbChunks, thMax);
@@ -525,33 +547,23 @@ int main(int argc, char** argv) {
   size_t mis = 0, totalMiss = 0, totalNoFile = 0;
   slots = vector<bool>(nbChunks, false);
   chkAlloc(fileCnt,outT);
+  CLK::time_point lStart = CLK::now();
   runThreads();
+  CLK::time_point lEnd = CLK::now();
   listEmptyDirs = listEmptyDirs && emptyDirsCnt>0;
   filesByBlock = filesByBlock && hashedCnt>1;
   if(showDur || showStats || filesByBlock || listEmptyDirs) flushErr("\n");
   LPCSTR fBlock = filesByBlock ? "\n":"";
   if(max2List==0) max2List = hashedCnt;
-  size_t i, sz, dirIdx; bool *folderDisp; chkAlloc(fileCnt,folderDisp); j = 0;
+  size_t i, dirIdx, j = 0; bool *folderDisp; chkAlloc(items.size(),folderDisp);
   for(i=0;i<fileCnt;i++) if(nullptr!=outT[i]) { 
-    if(listDirs){ dirIdx = items[fileIndxes[i]]->parent;
-      if(!folderDisp[dirIdx]){ folderDisp[dirIdx] = true; sz = items[dirIdx]->sz;
-        if(humanReadableSz)
-          flushOut("%s: %s, %zu files\n",         items[dirIdx]->path, humanSize(sz),   items[dirIdx]->nbFiles);
-        else
-          flushOut("%s: %zu byte%s, %zu files\n", items[dirIdx]->path, sz,sz==1?"":"s", items[dirIdx]->nbFiles);
-      }
-    }
-    flushOut("%s%s\n",outT[i],fBlock); delete[] outT[i]; if(++j==(max2List-1)) break; }
+    if(listDirs) listDir(dirIdx = items[fileIndxes[i]]->parent, folderDisp);
+    flushOut("%s%s\n",outT[i],fBlock); delete[] outT[i]; if(++j==(max2List-1)) break;
+  }
   for(size_t k=i+1;k<fileCnt;k++) if(nullptr!=outT[k]) { 
-    if(listDirs){ dirIdx = items[fileIndxes[k]]->parent;
-      if(!folderDisp[dirIdx]){ folderDisp[dirIdx] = true; sz = items[dirIdx]->sz;
-        if(humanReadableSz)
-          flushOut("%s: %s, %zu files\n",         items[dirIdx]->path, humanSize(sz),   items[dirIdx]->nbFiles);
-        else
-          flushOut("%s: %zu byte%s, %zu files\n", items[dirIdx]->path, sz,sz==1?"":"s", items[dirIdx]->nbFiles);
-      }
-    }
-    flushOut("%s%s",outT[k],fBlock); flushErr("\n"); delete[] outT[k]; break; }
+    if(listDirs) listDir(dirIdx = items[fileIndxes[k]]->parent, folderDisp);
+    flushOut("%s%s",outT[k],fBlock); flushErr("\n"); delete[] outT[k]; break;
+  }
   fileIndxes = vector<size_t>(); slots = vector<bool>(); delete[] outT;
   
   if(listEmptyDirs){ if(!filesByBlock) flushOut("\n");
@@ -562,17 +574,16 @@ int main(int argc, char** argv) {
   if(showDur || showStats){ if(listEmptyDirs || !filesByBlock) flushErr("\n"); }
   else if(listEmptyDirs) flushErr("\n");
   
-  //_sleep(72000);
-  long long dur = DURµs(CLK::now() - start).count();
-
-  if(showStats){ 
-    flushErr("Hashed %zu bytes (%s).", totalSzHashed, humanSize(totalSzHashed));
-    flushErr(" Folder size: %s.",humanSize(items[0]->sz));
-    if(hashedCnt!=fileCnt) flushErr(" Processed %zu file%s.", hashedCnt, hashedCnt==1?"":"s");
-    flushErr(" Average data rate: %s/s\n", humanSize(1000000*totalSzHashed/dur)); 
+  if(showStats){ long long dur = DURµs(lEnd - lStart).count();
+    flushErr("Hashed %zu bytes (%s) in ", totalSzHashed, humanSize(totalSzHashed)); formatDur(dur,false);
+    //if(hashedCnt!=fileCnt) 
+    flushErr(". Processed %zu file%s. Average data rate: %s/s\n", hashedCnt, hashedCnt==1?"":"s", 
+      humanSize(1000000*totalSzHashed/dur));
+    flushErr("Folder size: "); listDir(0,nullptr);
   }
 
-  if(showDur) formatDur( dur );
+  //_sleep(1000);
+  if(showDur) formatDur( DURµs(CLK::now() - start).count() );
 
   return 0;
 }
@@ -605,7 +616,7 @@ dirCounts* travel(LPWSTR const & wpath, LPSTR const & path, size_t parentIdx, si
   chkAlloc(1, fo);
   chkAlloc(sz = 1+strlen(path),  fo->path);   strCopy(fo->path,  sz, path);
   chkAlloc(sz = 1+wcslen(wpath), fo->wpath); wstrCopy(fo->wpath, sz, wpath);
-  fo->nbFiles = fo->sz = 0; fo->isdir = true; fo->parent = parentIdx; 
+  fo->nbFiles = fo->sz = fo->nHidden = fo->nSys = 0; fo->isdir = true; fo->parent = parentIdx; 
   fo->idx = folderIdx = ++idx; items.push_back(fo);
   
   WIN32_FIND_DATA wfd; WCHAR * tmp;
@@ -614,8 +625,8 @@ dirCounts* travel(LPWSTR const & wpath, LPSTR const & path, size_t parentIdx, si
   free(tmp);
   if(ERROR_FILE_NOT_FOUND == err) return dc;
   
-  size_t folderSz = 0, nbFiles = 0; LPSTR fn, catp; LPWSTR wcatp;
-  vector<shared_ptr<WCHAR>> wdirs; vector<shared_ptr<CHAR>> dirs;
+  size_t folderSz = 0, nbFiles = 0, hiddenCnt = 0, sysCnt = 0; LPSTR fn, catp; LPWSTR wcatp; bool b, hidden, system;
+  vector<shared_ptr<WCHAR>> wdirs; vector<shared_ptr<CHAR>> dirs; vector<bool> vhidden;  vector<bool> vsystem;
   do { 
     if(!lstrcmpW(wfd.cFileName, L".") || !lstrcmpW(wfd.cFileName, L"..") || 
        wcsstr(wfd.cFileName, L"\\$RECYCLE.BIN") ||
@@ -625,15 +636,31 @@ dirCounts* travel(LPWSTR const & wpath, LPSTR const & path, size_t parentIdx, si
     shared_ptr<CHAR> p( catp = catStr({path,forwardSlash==1?"/":"\\",fn}) );
     shared_ptr<WCHAR> wp( wcatp = catWstr({wpath,L"\\",wfd.cFileName}) );
     sz = 2+strlen(fn)+strlen(path);
+
+    hidden = wfd.dwFileAttributes&FILE_ATTRIBUTE_HIDDEN;
+    system = wfd.dwFileAttributes&FILE_ATTRIBUTE_SYSTEM;
+    if((noHidden && hidden) || (!sysFiles && system)) continue;
     
-    if(wfd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){ wdirs.push_back(wp); dirs.push_back(p); continue; }
+    if(wfd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY){ wdirs.push_back(wp); dirs.push_back(p); 
+      vhidden.push_back(hidden); vsystem.push_back(system); continue; }
     
-    chkAlloc(1, fo); chkAlloc(sz, fo->path); strCopy(fo->path, sz, catp);
+    fsObj *fo; chkAlloc(1, fo);
+    chkAlloc(sz, fo->path); strCopy(fo->path, sz, catp);
     chkAlloc(sz = 1+wcslen(wcatp), fo->wpath); wstrCopy(fo->wpath, sz, wcatp);
     fo->parent = folderIdx; fo->idx = ++idx; fo->isdir = false; fo->nbFiles = 0;
     fo->sz = sz = wfd.nFileSizeHigh * 0x100000000 + wfd.nFileSizeLow;  // stupid warning C4307 on their own formula
     //sz = fo->sz = wfd.nFileSizeHigh * (MAXDWORD+1) + wfd.nFileSizeLow;
-    items.push_back(fo); fileIndxes.push_back(idx); ++fileCnt;
+    
+    b = false;
+    if(hidden){ hiddenCnt++; fo->hidden = true; if(noHidden) b = fo->skip = true; }
+    if(system){ sysCnt++; fo->system = true; if(!b && !sysFiles) b = fo->skip = true; }
+    if(!b && max2List>0 && ++nfiles2Show>max2List) b = fo->skip = true;
+    if(!b){
+      if(humanReadableSz){ short n = (short)strlen(fo->hsz = humanSize(sz)); szWidth = szWidth<n ? n:szWidth; }
+      else LargestFileSz2show = LargestFileSz2show<sz ? sz:LargestFileSz2show;
+    }
+    
+    items.push_back(fo);fileIndxes.push_back(idx); ++fileCnt;
     folderSz += sz; nbFiles++; LargestFileSz = LargestFileSz<sz ? sz : LargestFileSz;
 
   } while(FindNextFileW(hFind, &wfd));
@@ -643,11 +670,12 @@ dirCounts* travel(LPWSTR const & wpath, LPSTR const & path, size_t parentIdx, si
   dirCounts *d; size_t i = 0;
   for(auto wdir : wdirs) { 
     d = travel(wdir.get(), dirs[i++].get(),folderIdx,LargestFileSz);
-    folderSz += d->sz; nbFiles += d->nbFiles; delete[] d;    
+    items[folderIdx]->hidden = vhidden[i]; items[folderIdx]->system = vsystem[i]; 
+    hiddenCnt += d->nHidden; sysCnt += d->nSys; folderSz += d->sz; nbFiles += d->nbFiles; delete[] d;    
   }
 
-  dc->sz = folderSz; dc->nbFiles = nbFiles; if(folderSz==0) emptyDirsCnt++;
-  items[folderIdx]->sz = folderSz; items[folderIdx]->nbFiles = nbFiles;
+  items[folderIdx]->sz = dc->sz = folderSz; items[folderIdx]->nbFiles = dc->nbFiles = nbFiles;
+  items[folderIdx]->nHidden = dc->nHidden = hiddenCnt; items[folderIdx]->nSys = dc->nSys = sysCnt; if(folderSz==0) emptyDirsCnt++;
   return dc;
 }
 
@@ -684,6 +712,10 @@ UINT chewChunk(size_t chunk){
 short processFile(size_t fidx) {
   
   if(items[fileIndxes[fidx]]->skip) return 0;
+  if(max2List>0) { bool stop = false;
+    if(thMax>1) sync( if(hashedCnt+1>max2List) stop = true; )
+    else if(hashedCnt+1>max2List) stop = true;
+    if(stop) return 0; }
 
   size_t sz = items[fileIndxes[fidx]]->sz;  
   LPSTR p; LPCSTR fn = items[fileIndxes[fidx]]->path;
@@ -693,7 +725,7 @@ short processFile(size_t fidx) {
   
   char *buffer; chkAlloc(BufferSize, buffer); 
   
-  auto f = CreateFileW(items[fileIndxes[fidx]]->wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  auto f = CreateFileW(items[fileIndxes[fidx]]->wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, nullptr);
   if(f==INVALID_HANDLE_VALUE){ printErr(p=catStr({"  Error opening file: ",fn,"\n"}),sysErr,0); free(p); 
     if(!IgnoreErr) stopProcessing=true; return 1; }
   
@@ -709,13 +741,16 @@ short processFile(size_t fidx) {
     if (computeSha3)   dSha3  .add(buffer, nBytesRead);
 
   }; auto Err = GetLastError(); CloseHandle(f);
-  if(Err){printErr(p=catStr({"  Error reading file: ",fn,"\n"}),10000+Err,0); free(p); if(!IgnoreErr) stopProcessing=true; return 1; }
+  if(Err){ printErr(p=catStr({"  Error reading file: ",fn,"\n"}),10000+Err,0); free(p); if(!IgnoreErr) stopProcessing=true; return 1; }
 
   chkRealloc(buffer,1); *buffer = 0;
   short c = 0;
 
   // show results
-  LPSTR tmp, fname = catStr({fn}); tmp = fname;
+  LPSTR fname;
+  if(tagSysHidden && ( (!noHidden && items[fileIndxes[fidx]]->hidden) || (sysFiles && items[fileIndxes[fidx]]->system) ) ) 
+    fname = catStr({"*",fn});
+  else fname = catStr({fn});
   if(!noFname && baseNames){ char *slash = strrchr(fname,'/'), *bslash = strrchr(fname,'\\');
     if(slash!=nullptr) memmove(fname,slash+1,strlen(fname));
     else if(bslash!=nullptr) memmove(fname,bslash+1,strlen(fname));
@@ -732,13 +767,14 @@ short processFile(size_t fidx) {
   free(fname);
 
   outT[fidx] = buffer;
-  Lock(); hashedCnt++; totalSzHashed += c*sz; unLock();
+  if(thMax>1) sync( hashedCnt++; totalSzHashed += c*sz; )
+  else{ hashedCnt++; totalSzHashed += c*sz; }
 
   return 0;
 }
 
 inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSzIdx, 
-     const std::pair<string,size_t>& P, const LPCSTR fn, short& c)
+     const std::pair<string,size_t>& P, LPCSTR fn, short& c)
  {
   LPCSTR hash = P.first.c_str(); size_t nHash = P.second;
   LPSTR p,s; chkAlloc(1, p);
@@ -758,6 +794,7 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSzIdx,
     s = buffer; buffer = catStr({buffer, (!prWord && c>0)? "\n":"", p}); free(s); prWord = true;
   }
   chkRealloc(p, (size_t)hashW + 1 + strlen(fn) + 1);
+  
   if(nHash){ 
     if(lowerCase){ 
       if(pretty) sprintf(p, "%-*Ix %s", hashW,nHash, fn);
@@ -768,15 +805,16 @@ inline void fprHashLine(LPSTR& buffer, const string& algo, const size_t fSzIdx,
       else       sprintf(p, "%IX %s",         nHash, fn);
     }
   }
-  else {
+  else {  s = nullptr;
     if(pretty) sprintf(p, "%-*.*s %s", hashW,hashW,lowerCase? hash:(s=toupper(P.first)), fn);
     else       sprintf(p, "%s %s",                 lowerCase? hash:(s=toupper(P.first)), fn);
+    free(s);
   }
   s = buffer; buffer = catStr({buffer, (!prWord && c>0)? "\n":"", p}); free(s); c++;
   free(p); 
 }
 
-short process1File(LPSTR fn, LPCWSTR wfn) {
+short process1File(LPSTR fn, LPCWSTR wfn, DWORD attr) {
   
   size_t fSz = 0; 
   LARGE_INTEGER fileSize;
@@ -819,14 +857,19 @@ short process1File(LPSTR fn, LPCWSTR wfn) {
     if(slash!=nullptr) memmove(fn,slash+1,strlen(fn));
     else if(bslash!=nullptr) memmove(fn,bslash+1,strlen(fn));
   }
+  LPSTR fname;
+  if(tagSysHidden && ( (!noHidden && attr&FILE_ATTRIBUTE_HIDDEN) || (sysFiles && attr&FILE_ATTRIBUTE_SYSTEM) ) ) 
+    fname = catStr({"*",fn});
+  else fname = fn;
+
   #define P std::make_pair<string,size_t>
-  if(computeCrc32)  { prHashLine(crcN,    fszW,fSz, P(dCrc32.getHash(),0),  fn); c++; }
-  if(computeXX)     { prHashLine(xxN,     fszW,fSz, P("",xxhash.hash()),    fn); c++; }
-  if(computeMd5)    { prHashLine(md5N,    fszW,fSz, P(dMd5.getHash(),0),    fn); c++; }
-  if(computeSha1)   { prHashLine(sha1N,   fszW,fSz, P(dSha1.getHash(),0),   fn); c++; }
-  if(computeSha2)   { prHashLine(sha2N,   fszW,fSz, P(dSha2.getHash(),0),   fn); c++; }
-  if(computeSha3)   { prHashLine(sha3N,   fszW,fSz, P(dSha3.getHash(),0),   fn); c++; }
-  if(computeKeccak) { prHashLine(KeccakN, fszW,fSz, P(dKeccak.getHash(),0), fn); c++; }
+  if(computeCrc32)  { prHashLine(crcN,    fszW,fSz, P(dCrc32.getHash(),0),  fname); c++; }
+  if(computeXX)     { prHashLine(xxN,     fszW,fSz, P("",xxhash.hash()),    fname); c++; }
+  if(computeMd5)    { prHashLine(md5N,    fszW,fSz, P(dMd5.getHash(),0),    fname); c++; }
+  if(computeSha1)   { prHashLine(sha1N,   fszW,fSz, P(dSha1.getHash(),0),   fname); c++; }
+  if(computeSha2)   { prHashLine(sha2N,   fszW,fSz, P(dSha2.getHash(),0),   fname); c++; }
+  if(computeSha3)   { prHashLine(sha3N,   fszW,fSz, P(dSha3.getHash(),0),   fname); c++; }
+  if(computeKeccak) { prHashLine(KeccakN, fszW,fSz, P(dKeccak.getHash(),0), fname); c++; }
   #undef P
 
   hashedCnt++; totalSzHashed += c*fSz;
@@ -842,14 +885,14 @@ inline void prHashLine(const string& algo, const short fszW, const size_t fSz, c
                               else                flushOut("%-*.*s %zu ", hashNameW,hashNameW,algo.c_str(), fSz); }
                             else                  flushOut("%-*.*s ",     hashNameW,hashNameW,algo.c_str()); }
   else if(algoPrefix){ if(sizePrefix){ 
-                         if(humanReadableSz) flushOut("%s %zu ", algo.c_str(), humanSize(fSz));
+                         if(humanReadableSz) flushOut("%s %s ", algo.c_str(), humanSize(fSz));
                          else                flushOut("%s %zu ", algo.c_str(), fSz); }
                        else                  flushOut("%s ",     algo.c_str()); }
   else if(sizePrefix) if(humanReadableSz) flushOut("%s ", humanSize(fSz)); else flushOut("%zu ", fSz);
   
   if(nHash){ 
     if(lowerCase){ 
-      if(pretty&&noFname) flushOut("%Ix\n",           nHash);
+      if(pretty&&noFname) flushOut("%Ix\n",            nHash);
       else if(pretty)     flushOut("%-*Ix %s\n", hashW,nHash, noFname? "":fn);
       else                flushOut("%Ix %s\n",         nHash, noFname? "":fn); 
     }
@@ -861,10 +904,11 @@ inline void prHashLine(const string& algo, const short fszW, const size_t fSz, c
     return;
   } 
 
-  if(noFname)         flushOut("%s\n",                    lowerCase? hash:toupper(p.first));
-  else if(pretty)     flushOut("%-*.*s %s\n", hashW,hashW,lowerCase? hash:toupper(p.first), fn);
-  else                flushOut("%s %s\n",                 lowerCase? hash:toupper(p.first), fn);
-  
+  LPSTR s = nullptr;
+  if(noFname)         flushOut("%s\n",                    lowerCase? hash:(s=toupper(p.first)));
+  else if(pretty)     flushOut("%-*.*s %s\n", hashW,hashW,lowerCase? hash:(s=toupper(p.first)), fn);
+  else                flushOut("%s %s\n",                 lowerCase? hash:(s=toupper(p.first)), fn);
+  free(s);
 }
 
 template <typename T, class ... Ts>
@@ -895,26 +939,27 @@ inline void chkRealloc(T*& x, size_t count) {
   }
 }
 
-inline void formatDur(__int64 dur) {
-  size_t s = (size_t)(dur / 1000000); UINT ms = (UINT)(dur / 1000 - 1000 * (dur / 1000000));
+inline void formatDur(__int64 dur, bool done) {
+  size_t s = (size_t)(dur / 1000000); size_t ms = (size_t)(dur  - 1000000*s);
   UINT h = (UINT)(s / 3600); UINT m = (UINT)((s - 3600 * h) / 60);
   //flushErr("\nDone in %02lu:%02lu:%02lu.%lums\n\n", h, m, s, ms);
 
-  size_t n = 65, cnt = 0; s = s % 60;
+  size_t n = 65, cnt = 0; s = s % 60; CHAR lf[3] = "";
   CHAR* sh = nullptr, *sm = nullptr, *ss = nullptr; chkAlloc(n,sh,sm,ss);
-  flushErr("Done in ");
+  if(done){ flushErr("Done in "); lf[0] = '.'; lf[1] = '\n'; }
+  else lf[0] = '\0';
   //if (d > 0) { snprintf(sd, 100, "%ld day", d);  cnt++; }; if (d > 1 || d == 0)  strcat(sd, "s");
   //h = 2; m = 14; s = 23;
   if(h>0){ snprintfA(sh, n, "%d hour", 2);   cnt++; }; if (h != 1)  strcat(sh, "s");
   if(m>0){ snprintfA(sm, n, "%d minute", m); cnt++; }; if (m != 1)  strcat(sm, "s");
   if(s>0){ snprintfA(ss, n, " second");    cnt++; }; if (ms>0 || s!=1) strcat(ss, "s");
-  if(cnt==0){ flushErr("%d millisecond", ms); if (ms != 1) flushErr("s.\n"); else flushErr(".\n"); return; }
+  if(cnt==0){ flushErr("%.3f millisecond", (double)ms/1000); if (ms != 1000) flushErr("s%s",lf); else flushErr("%s",lf); return; }
   //if(d>0){ cnt--; flushErr("%s", sd); if (cnt > 0) flushErr(" and "); else flushErr(", "); }
   if(h>0){ cnt--; flushErr("%s", sh); if (cnt==0) flushErr(" and "); else flushErr(", "); }
   if(m>0){ cnt--; flushErr("%s", sm); if (cnt==0) flushErr(" and "); else flushErr(", "); }
-  if(s>0){ flushErr("%lu.%03d", s, ms); flushErr("%s", ss); }
-  else{ flushErr("%d millisecond", ms); if (ms != 1) flushErr("s"); }
-  flushErr(".\n");
+  if(s>0){ flushErr("%lu.%06zu", s, ms); flushErr("%s", ss); }
+  else{ flushErr("%.3f millisecond", (double)ms/1000); if (ms != 1000) flushErr("s"); }
+  if(done) flushErr(".\n");
 }
 
 inline wchar_t* uf8toWide(LPCCH str) {
